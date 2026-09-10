@@ -1,0 +1,117 @@
+name: CI
+
+# 这套 CI 只验证「代码是通的」，不碰真实数据（数据集有许可限制且几十 GB）。
+# 所有检查都跑在合成数据 + 微型 ViT 上，几分钟就能出结果。
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies (CPU-only torch to keep CI fast)
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          pip install pytest ruff
+
+      - name: Lint
+        run: ruff check fedosp scripts --output-format=github
+        continue-on-error: true
+
+      - name: Unit tests
+        run: pytest tests/ -v
+
+      - name: Backbone compatibility (ViT / SwinV2 / ResNet)
+        run: |
+          python - <<'EOF'
+          import logging, warnings, torch
+          warnings.filterwarnings('ignore')
+          logging.basicConfig(level=logging.WARNING)
+          from fedosp.models.retfound_lora import build_model
+
+          # 用小一号的 ViT 省 CI 时间；结构路径与 ViT-L 完全一致
+          cases = [('vit_small_patch16_224', 224), ('swinv2_tiny_window8_256', 256), ('resnet50', 224)]
+          for bb, size in cases:
+              m = build_model(backbone=bb, img_size=size, lora_last_n_blocks=6)
+              out = m(torch.randn(2, 3, size, size))
+              out.logits.sum().backward()
+              shared, personal = set(m.shared_state_dict()), set(m.personal_state_dict())
+              assert not (shared & personal), f'{bb}: 本地 norm 泄漏进上传集合'
+              assert personal, f'{bb}: 没识别出任何本地 norm 参数'
+              assert out.logits.shape == (2, 5), f'{bb}: 输出形状不对'
+              print(f'  OK {bb}: {m.param_report()}')
+          EOF
+
+      - name: All strategies run end-to-end (synthetic data)
+        run: |
+          for s in fedavg fedprox fedbn fedper scaffold fedproto feduaa fedosp; do
+            echo "::group::strategy $s"
+            python -m fedosp.run_fed --dry-run --rounds 3 --strategy "$s" \
+                   --out "runs/ci_$s" || exit 1
+            echo "::endgroup::"
+          done
+
+      - name: Federated pipeline actually learns
+        run: |
+          python -m fedosp.run_fed --dry-run --rounds 40 --lr 3e-3 --out runs/ci_learn
+          python - <<'EOF'
+          import json
+          r = json.load(open('runs/ci_learn/result.json'))
+          q = r['test_summary']['macro_qwk']
+          print(f'40 轮后 macro QWK = {q:.4f}')
+          # 合成数据上有明确可学信号，学不到 0.5 说明训练循环坏了
+          assert q > 0.5, f'合成数据上只到 {q:.4f}，训练循环可能有问题'
+          EOF
+
+      - name: Statistical tests
+        run: |
+          python - <<'EOF'
+          import numpy as np
+          from sklearn.metrics import roc_auc_score
+          from fedosp.stats import delong_test, holm_bonferroni, wilcoxon_clients
+
+          rng = np.random.default_rng(0)
+          y = rng.integers(0, 2, 500)
+          a, b = y * 1.2 + rng.normal(0, 1, 500), y * 0.6 + rng.normal(0, 1, 500)
+          r = delong_test(y, a, b)
+          # DeLong 的 AUC 必须和 sklearn 完全一致，否则实现有问题
+          assert abs((roc_auc_score(y, a) - roc_auc_score(y, b)) - r.effect) < 1e-9
+          assert r.p_value < 0.01, 'DeLong 没检出明显差异'
+          assert delong_test(y, a, a).p_value > 0.99, '自比应该不显著'
+          holm_bonferroni([r])
+          print('  OK 统计检验')
+          EOF
+
+      - name: Scheduler dry-run (expands the full experiment matrix)
+        run: |
+          python scripts/scheduler.py --stage all --gpus 0 --dry-run \
+                 --matrix configs/experiment_matrix.csv 2>&1 | tail -20
+
+      - name: Analysis scripts run on synthetic results
+        run: |
+          python scripts/aggregate_results.py --runs runs --out /tmp/tables || true
+          python scripts/make_figures.py --runs runs --out /tmp/figures --figs F5 F6 F7 || true
+
+      - name: Shell scripts are syntactically valid
+        run: |
+          bash -n scripts/run_all.sh
+          bash -n scripts/download_data.sh
+          bash -n scripts/sanity_check.sh

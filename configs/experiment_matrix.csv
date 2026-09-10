@@ -1,0 +1,46 @@
+exp_id,stage,entrypoint,strategy,backbone,img_size,clients,rounds,epochs,label_budget,participation,mode,seeds,extra_args,est_gpu_h,priority,note
+s_anchor_aptos,sanity,fedosp.run_central,,,224,aptos,,15,,,local,0,--check-anchors,0.3,P0,单中心锚点：APTOS QWK 应≈0.90（文献锚点），对不上说明数据管线有问题
+s_anchor_eyepacs,sanity,fedosp.run_central,,,224,eyepacs,,10,,,local,0,--check-anchors,0.8,P0,单中心锚点：EyePACS QWK 应≈0.80
+s_anchor_idrid,sanity,fedosp.run_central,,,224,idrid,,25,,,local,0,--check-anchors,0.2,P0,单中心锚点：IDRiD 小样本，方差大属正常
+base_local,main,fedosp.run_central,,,224,eyepacs aptos ddr idrid,,20,,,local,0;1;2,,1.5,P0,B1 四个中心各训各的，证明联邦对 IDRiD 有价值
+base_pooled,main,fedosp.run_central,,,224,eyepacs aptos ddr idrid,,20,,,pooled,0;1;2,,2.4,P0,B2 汇总训练的 oracle 上界（现实中不合法，只作参考）
+base_fedavg,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto,3.3,P0,B3 最基础的联邦基线
+base_fedprox,main,fedosp.run_fed,fedprox,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --fedprox-mu 0.01,3.4,P0,B4 近端项抑制 client drift
+base_fedbn,main,fedosp.run_fed,fedbn,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto,3.3,P0,B5 LayerNorm 留本地
+base_scaffold,main,fedosp.run_fed,scaffold,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto,3.6,P0,B6 control variate；通信量约为 FedAvg 两倍，要如实报进 T5
+base_fedper,main,fedosp.run_fed,fedper,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto,3.3,P0,B7 分类头留本地
+base_fedproto,main,fedosp.run_fed,fedproto,,224,,100,,,,,0;1;2,--no-fsr --proto-agg sample,3.5,P0,B8 原型联邦按样本加权——本文 client 等权聚合的直接对手
+base_feduaa,main,fedosp.run_fed,feduaa,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto,3.5,P0,B9 FedUAA 复现版；论文必须声明是统一骨干下的复现而非原文数字
+base_full,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--full-finetune --no-fsr --no-shallow-proto --no-deep-proto --lr 1e-5,8.0,P1,B10 全量微调；上传量约 1.2GB/轮，是通信开销的对照上界
+base_vpt,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--num-prompts 10 --no-fsr --no-shallow-proto --no-deep-proto,3.4,P1,B11 visual prompt tuning，另一种 PEFT 对照
+m_fedosp,main,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,,3.6,P0,本文方法主结果；所有消融以此为基准
+abl_nofsr,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--no-fsr,3.5,P0,A1 去掉频域风格校准——检验 P1 是否成立（最关键消融之一）
+abl_noshallow,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--no-shallow-proto,3.5,P0,A2 去掉浅层风格原型
+abl_nodeep,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--no-deep-proto,3.5,P0,A3 去掉深层等级原型
+abl_nomargin,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--ordinal-margin 0,3.5,P0,A4 去掉序数间隔约束，原型退化成普通原型
+abl_noord,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--lambda-ord 0,3.5,P0,A5 去掉 EMD 序数损失，退回普通交叉熵
+abl_proto_sample,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--proto-agg sample,3.5,P0,A6-a 原型按样本数加权——检验 P3 是否成立（最关键消融之一）
+abl_proto_sqrt,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--proto-agg sqrt,3.5,P0,A6-b 原型按 sqrt 加权
+abl_globalln,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--no-personal-ln,3.5,P1,A7 LayerNorm 也参与聚合
+abl_equalsteps,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--steps-rule equal,3.5,P0,A10 取消本地步数均衡，大 client 步数按比例压小 client
+abl_fsr4,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--fsr-block 4,1.2,P1,A9-a FSR 插在更浅处
+abl_fsr12,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--fsr-block 12,1.2,P1,A9-b FSR 插在更深处
+abl_rank4,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--lora-rank 4,1.1,P1,A8-a LoRA 秩敏感性
+abl_rank16,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--lora-rank 16,1.3,P1,A8-b
+abl_rank32,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--lora-rank 32,1.5,P1,A8-c
+lab_fedosp_10,label,fedosp.run_fed,fedosp,,224,,100,,10%,,,0;1;2,,1.2,P0,标签效率 10%
+lab_fedosp_25,label,fedosp.run_fed,fedosp,,224,,100,,25%,,,0;1;2,,1.8,P0,标签效率 25%
+lab_fedosp_50,label,fedosp.run_fed,fedosp,,224,,100,,50%,,,0;1;2,,2.5,P0,标签效率 50%
+lab_fedavg_10,label,fedosp.run_fed,fedavg,,224,,100,,10%,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto,1.1,P0,标签效率对照 FedAvg 10%
+lab_fedavg_25,label,fedosp.run_fed,fedavg,,224,,100,,25%,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto,1.7,P0,标签效率对照 FedAvg 25%
+lab_fedavg_50,label,fedosp.run_fed,fedavg,,224,,100,,50%,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto,2.4,P0,标签效率对照 FedAvg 50%
+lab_fedproto_10,label,fedosp.run_fed,fedproto,,224,,100,,10%,,,0,--no-fsr --proto-agg sample,0.4,P1,标签效率对照 FedProto 10%
+lab_fedproto_25,label,fedosp.run_fed,fedproto,,224,,100,,25%,,,0,--no-fsr --proto-agg sample,0.6,P1,标签效率对照 FedProto 25%
+rob_part50,robust,fedosp.run_fed,fedosp,,224,,100,,,0.5,,0;1;2,,2.0,P1,D1 每轮只有一半 client 参与
+rob_part75,robust,fedosp.run_fed,fedosp,,224,,100,,,0.75,,0;1;2,,2.8,P1,D2 每轮 75% client 参与
+rob_fedavg_part50,robust,fedosp.run_fed,fedavg,,224,,100,,,0.5,,0,--no-fsr --no-shallow-proto --no-deep-proto,0.7,P1,D1 的 FedAvg 对照
+bb_swinv2,backbone,fedosp.run_fed,fedosp,swinv2_base_window8_256,256,,100,,,,,0;1;2,,4.2,P1,A12-a 换 SwinV2 骨干，证明方法与骨干解耦
+bb_resnet50,backbone,fedosp.run_fed,fedosp,resnet50,224,,100,,,,,0;1;2,,2.2,P1,A12-b 换 ResNet50；注意它的 FSR 频率分辨率是 56x56，比 ViT 高 16 倍，可用来检验频率分辨率假设
+bb_vit384,backbone,fedosp.run_fed,fedosp,vit_large_patch16_224,384,,100,,,,,0;1;2,,9.0,P1,A11 换 384 输入，FSR 频率 bin 从 196 增到 576
+bb_fedavg_swinv2,backbone,fedosp.run_fed,fedavg,swinv2_base_window8_256,256,,100,,,,,0,--no-fsr --no-shallow-proto --no-deep-proto,1.4,P2,A12-a 的 FedAvg 对照
+bb_fedavg_resnet50,backbone,fedosp.run_fed,fedavg,resnet50,224,,100,,,,,0,--no-fsr --no-shallow-proto --no-deep-proto,0.7,P2,A12-b 的 FedAvg 对照

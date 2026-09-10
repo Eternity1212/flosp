@@ -1,0 +1,43 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite both this repository and the RETFound paper it builds on."
+title: "FedOSP: Ordinal-Style Prototype Federated Learning for Multi-Center Diabetic Retinopathy Grading"
+abstract: >-
+  FedOSP addresses three problems in federated diabetic retinopathy grading that
+  existing methods leave open: (1) acquisition-style differences accumulate in
+  shallow layers and are not removed by aggregation alone, (2) DR severity is
+  ordinal but standard federated objectives treat it as nominal, and (3) a single
+  large center dominates aggregation, so the smallest center degrades. It combines
+  frequency-domain style recalibration, dual-level ordinal-aware prototypes,
+  client-equal prototype aggregation, and local-step equalization on top of a
+  frozen RETFound ViT-L backbone with LoRA, uploading 2.31 MB per client per round.
+type: software
+authors:
+  - family-names: "FIXME"
+    given-names: "FIXME"
+    affiliation: "FIXME"
+license: MIT
+repository-code: "https://github.com/USERNAME/fedosp"
+keywords:
+  - federated learning
+  - diabetic retinopathy
+  - ordinal classification
+  - domain generalization
+  - parameter-efficient fine-tuning
+references:
+  - type: article
+    title: "A foundation model for generalizable disease detection from retinal images"
+    authors:
+      - family-names: "Zhou"
+        given-names: "Yukun"
+      - family-names: "Chia"
+        given-names: "Mark A"
+      - family-names: "Wagner"
+        given-names: "Siegfried K"
+    journal: "Nature"
+    volume: 622
+    issue: 7981
+    start: 156
+    end: 163
+    year: 2023
+    doi: "10.1038/s41586-023-06555-x"
+    notes: "Pre-trained backbone used by this work."

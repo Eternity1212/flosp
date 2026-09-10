@@ -1,0 +1,40 @@
+MIT License
+
+Copyright (c) 2026 FedOSP authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---------------------------------------------------------------------------
+THIRD-PARTY NOTICES
+
+This MIT license covers **the code in this repository only**. Datasets and
+pre-trained weights used by this project carry their own, more restrictive
+terms, which are NOT granted by this license:
+
+* RETFound pre-trained weights — CC BY-NC 4.0 (non-commercial).
+  https://huggingface.co/YukunZhou/RETFound_mae_natureCFP
+* Messidor-2 — research and education only; redistribution prohibited.
+  Publications must acknowledge the Messidor program partners.
+  https://www.adcis.net/en/third-party/messidor2/
+* EyePACS / APTOS 2019 — subject to the respective Kaggle competition rules.
+* DDR — see https://github.com/nkicsl/DDR-dataset
+* IDRiD — CC BY 4.0, see https://ieee-dataport.org/open-access/indian-diabetic-retinopathy-image-dataset-idrid
+
+No dataset images or model weights are distributed with this repository.
+See DATA.md for how to obtain each of them yourself.

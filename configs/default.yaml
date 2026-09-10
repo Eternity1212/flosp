@@ -1,0 +1,55 @@
+# FedOSP 主实验配置（对应 09_方向二_落地实施方案.md 第 6 节超参表）
+#
+# 用法：python -m fedosp.run_fed --config configs/default.yaml --out runs/M0_s0
+# 命令行显式传的参数优先级高于本文件，所以消融只要覆盖对应的一两项即可，例如：
+#   python -m fedosp.run_fed --config configs/default.yaml --no-fsr --out runs/A1_s0
+#   python -m fedosp.run_fed --config configs/default.yaml --proto-agg sample --out runs/A6a_s0
+
+# ---------------- 数据 ----------------
+manifest: manifest_cached.csv
+clients: [eyepacs, aptos, ddr, idrid]
+label_budget: null          # 标签效率实验填 "400" 或 "20%"
+batch_size: 32
+num_workers: 8
+
+# ---------------- 模型 ----------------
+backbone: vit_large_patch16_224
+pretrained: null            # ← 正式实验必须填 RETFound 权重路径，否则骨干是随机初始化的
+img_size: 224               # A11 对比 384
+lora_rank: 8                # A8 扫 {4,8,16,32}
+lora_blocks: 12             # LoRA 打在最后 12 个 block
+fsr_block: 6                # A9 对比 4 / 8 / 12
+
+# ---------------- 消融开关（主实验全部 false / 默认值）----------------
+no_fsr: false               # A1
+no_shallow_proto: false     # A2
+no_deep_proto: false        # A3
+no_personal_ln: false       # A7
+ordinal_margin: 0.5         # A4：置 0 退化成普通原型拉近
+
+# ---------------- 损失权重 ----------------
+lambda_ord: 0.5             # A5：置 0 退回普通 CE
+lambda_proto_grade: 0.1
+lambda_proto_style: 0.1
+lambda_style: 0.05
+lambda_cons: 0.1
+
+# ---------------- 联邦协议 ----------------
+strategy: fedosp
+proto_agg: client_equal     # A6 核心消融：client_equal / sqrt / sample
+param_weight: sqrt
+steps_rule: sqrt            # A10：sqrt / equal / epoch
+min_steps: 20
+max_steps: 200
+rounds: 100
+participation: 1.0          # 只有 4 个 client，主实验全参与；D1/D2 才调低
+patience: 20
+fedprox_mu: 0.01
+
+# ---------------- 优化 ----------------
+lr: 0.0001
+weight_decay: 0.05
+amp: true
+
+# ---------------- 其它 ----------------
+seed: 0

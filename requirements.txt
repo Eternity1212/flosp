@@ -1,0 +1,16 @@
+# 核心依赖
+torch>=2.1
+torchvision>=0.16
+timm>=0.9.16          # RETFound ViT-L/16 骨干
+numpy>=1.24
+pandas>=2.0
+pillow>=10.0
+pyyaml>=6.0
+
+# 可选：统计检验与画图（第 8 周用）
+scipy>=1.11
+matplotlib>=3.7
+seaborn>=0.13
+
+# 可选：只有走 Flower 路线时才需要（内置模拟器不需要）
+# flwr[simulation]>=1.7
