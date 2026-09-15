@@ -5,9 +5,12 @@
 > 冻结的 RETFound ViT-L 骨干 + LoRA，每轮每个 client 只上传 **2.31 MB**（实测），
 > 相比全量同步降低约 **520 倍**通信量。
 
-[![CI](https://github.com/Eternity1212/flosp/actions/workflows/ci.yml/badge.svg)](https://github.com/Eternity1212/flosp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+
+> **CI 还没启用**：配置在 [`ci/github-workflow-ci.yml`](ci/github-workflow-ci.yml)，
+> 挪到 `.github/workflows/ci.yml` 即生效。一步操作，见 [`ci/README.md`](ci/README.md)。
+> （GitHub 不允许缺 `workflow` scope 的 token 写 `.github/workflows/`，所以首次上传放在了 `ci/`。）
 
 ---
 
