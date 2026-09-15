@@ -8,18 +8,21 @@
 #   bash scripts/run_all.sh --stage main                 # 只跑主对比
 #   bash scripts/run_all.sh --dry-run                    # 只打印命令，不真跑
 #   bash scripts/run_all.sh --smoke                      # 5 分钟合成数据冒烟测试
+#   bash scripts/run_all.sh --pilot                      # 本机 pilot（无 GPU，约 2 天）
 #
 # 阶段（--stage）：
 #   check     环境与数据自检
 #   data      建 manifest + 预处理（约 2-4 小时，只需跑一次）
 #   sanity    文献锚点核对 —— **这是关卡，不过就别往下跑**
-#   main      11 个基线 + FedOSP 主结果
-#   ablation  组件消融 A1-A10
+#   main      12 个基线 + B17 交叉组 + FedOSP 主结果
+#   ablation  组件消融 A1-A12
 #   label     标签效率曲线
 #   robust    参与率压力测试
-#   backbone  骨干替换 A11/A12
-#   analyze   汇总表格 T1-T6 + 论文插图 F2-F7
-#   all       以上全部（默认）
+#   backbone  骨干替换
+#   analyze   汇总表格 T1-T7 + 论文插图 F2-F7
+#   all       以上全部（默认，**不含 pilot**）
+#   pilot     本机降规模 pilot，需配 --matrix configs/pilot_local.csv
+#             （或直接用 --pilot 快捷方式）。产出一律 tier="pilot"，不可引用
 #
 # 断点续跑：已有 result.json 的配置自动跳过，中断后重跑同一条命令即可。
 # ============================================================================
@@ -30,6 +33,8 @@ cd "$REPO_ROOT"
 
 # ------------------------------- 默认参数 ------------------------------- #
 STAGE="all"
+#: 实验矩阵。本机 pilot 传 configs/pilot_local.csv（--stage pilot）
+MATRIX="$REPO_ROOT/configs/experiment_matrix.csv"
 GPUS=""
 JOBS_PER_GPU=1
 SEEDS="0,1,2"
@@ -59,6 +64,11 @@ hdr()  { printf '\n%s%s%s\n%s\n' "$C_BLD" "$*" "$C_OFF" \
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stage)        STAGE="$2"; shift 2 ;;
+    --matrix)       MATRIX="$2"; shift 2 ;;
+    # --pilot 是 `--matrix configs/pilot_local.csv --stage pilot` 的快捷方式。
+    # 两个参数必须同时给（矩阵换了但 stage 没换 → 一个任务都不跑，且不报错），
+    # 这种"沉默的空跑"很容易踩，所以给一个不会记错的入口。
+    --pilot)        MATRIX="$REPO_ROOT/configs/pilot_local.csv"; STAGE="pilot"; shift ;;
     --gpus)         GPUS="$2"; shift 2 ;;
     --jobs-per-gpu) JOBS_PER_GPU="$2"; shift 2 ;;
     --seeds)        SEEDS="$2"; shift 2 ;;
@@ -215,7 +225,7 @@ run_stage() {
   local args=(--stage "$st" --gpus "$GPUS" --jobs-per-gpu "$JOBS_PER_GPU"
               --seeds "$SEEDS" --retries "$RETRIES" --manifest "$MANIFEST"
               --runs-dir "$RUNS_DIR" --log-dir "$LOG_DIR"
-              --matrix "$REPO_ROOT/configs/experiment_matrix.csv")
+              --matrix "$MATRIX")
   [[ -n "$PRETRAINED" ]] && args+=(--pretrained "$PRETRAINED")
   [[ -n "$DRY_RUN" ]]    && args+=($DRY_RUN)
   [[ -n "$FORCE" ]]      && args+=($FORCE)
@@ -268,7 +278,7 @@ case "$STAGE" in
   check)    stage_check ;;
   data)     stage_data ;;
   analyze)  stage_analyze ;;
-  sanity|main|ablation|label|robust|backbone) run_stage "$STAGE" ;;
+  sanity|main|ablation|label|robust|backbone|pilot) run_stage "$STAGE" ;;
   all)
     stage_check
     stage_data

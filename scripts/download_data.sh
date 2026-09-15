@@ -61,25 +61,38 @@ count_images() {
 
 # ============================================================================
 if [[ $DO_EYEPACS -eq 1 ]]; then
-  hdr "EyePACS（Kaggle DR 2015，约 35 GB）"
+  hdr "EyePACS（Kaggle DR 2015）—— 只下官方 train，约 35 GB"
   check_kaggle
   mkdir -p "$RAW/eyepacs"; cd "$RAW/eyepacs"
   if [[ -d train && $(count_images train) -gt 30000 ]]; then
     ok "已存在，跳过"
   else
-    warn "35 GB，视网速可能要几小时。若报 403 → 先去网页接受竞赛规则（DATA.md 第 1 节）"
-    kaggle competitions download -c diabetic-retinopathy-detection || die "下载失败"
-    log "合并分卷并解压（图像分成 5 个卷）"
-    if ls train.zip.00* &>/dev/null; then
-      cat train.zip.00* > train.zip && unzip -q -o train.zip && rm -f train.zip train.zip.00*
+    # ★ 只下 train。理由：build_manifest.build_eyepacs() 只读 trainLabels.csv 和
+    #   train/，并在这 35,126 张里做 70/10/20 的**病人级**切分。官方 test
+    #   （53,576 张 / 约 49 GB）全程不参与，拉下来纯属浪费带宽和磁盘。
+    #   `kaggle competitions download -c <slug>` 会拉走全部约 84 GB，所以必须逐文件指定。
+    need_gb=80   # 35 GB 压缩包 + 解压后 35 GB，中途并存
+    avail_gb=$(df -g . 2>/dev/null | awk 'NR==2{print $4}')
+    if [[ -n "$avail_gb" && "$avail_gb" -lt "$need_gb" ]]; then
+      warn "可用磁盘 ${avail_gb} GB < 需要约 ${need_gb} GB（压缩包与解压结果会短暂并存）"
+      warn "腾空间，或设 FEDOSP_DATA 指向外置盘后重跑"
     fi
-    if ls test.zip.00* &>/dev/null; then
-      cat test.zip.00* > test.zip && unzip -q -o test.zip && rm -f test.zip test.zip.00*
-    fi
-    for z in trainLabels.csv.zip retinopathy_solution.csv.zip; do
-      [[ -f "$z" ]] && unzip -q -o "$z"
+    warn "约 35 GB，视网速可能要几小时。若报 403 → 先去网页接受竞赛规则（DATA.md 第 1 节）"
+    for f in train.zip.001 train.zip.002 train.zip.003 train.zip.004 train.zip.005 \
+             trainLabels.csv.zip; do
+      [[ -f "$f" || -f "${f%.zip}" ]] && { ok "$f 已在本地"; continue; }
+      log "下载 $f"
+      kaggle competitions download -c diabetic-retinopathy-detection -f "$f" \
+        || die "下载 $f 失败"
     done
-    ok "EyePACS 就绪"
+    log "合并分卷并解压（train 分成 5 卷）"
+    if ls train.zip.00* &>/dev/null; then
+      cat train.zip.00* > train.zip \
+        && unzip -q -o train.zip \
+        && rm -f train.zip train.zip.00*     # 立刻删压缩包，峰值占用减半
+    fi
+    [[ -f trainLabels.csv.zip ]] && unzip -q -o trainLabels.csv.zip && rm -f trainLabels.csv.zip
+    ok "EyePACS 就绪（省下官方 test 的约 49 GB）"
   fi
 fi
 
@@ -143,16 +156,26 @@ fi
 
 if [[ $DO_RETFOUND -eq 1 ]]; then
   hdr "RETFound 预训练权重（约 1.2 GB）"
-  command -v huggingface-cli &>/dev/null || die "没装：pip install huggingface_hub"
+  # huggingface_hub 1.x 把 CLI 从 `huggingface-cli` 改名为 `hf`，
+  # 并移除了 --local-dir-use-symlinks。两种都支持，避免换个机器就报"没装"。
+  if command -v hf &>/dev/null; then
+    HF_CLI=(hf); HF_LOGIN="hf auth login"
+  elif command -v huggingface-cli &>/dev/null; then
+    HF_CLI=(huggingface-cli); HF_LOGIN="huggingface-cli login"
+  else
+    # pip 装的脚本常落在 ~/Library/Python/3.x/bin 或 ~/.local/bin，可能不在 PATH
+    die "找不到 hf / huggingface-cli。装：pip install -U huggingface_hub
+      装过还报这个 → 脚本目录不在 PATH，加一行到 ~/.zshrc：
+        export PATH=\"\$HOME/Library/Python/3.9/bin:\$HOME/.local/bin:\$PATH\""
+  fi
   if [[ -f "$WEIGHTS/RETFound_mae_natureCFP.pth" ]]; then
     ok "已存在：$WEIGHTS/RETFound_mae_natureCFP.pth"
   else
     warn "这是 gated model：必须先在网页上获批，否则下面会报 401/403"
     echo "  1. https://huggingface.co/YukunZhou/RETFound_mae_natureCFP → Agree and access"
-    echo "  2. https://huggingface.co/settings/tokens → 建 read token → huggingface-cli login"
+    echo "  2. https://huggingface.co/settings/tokens → 建 read token → $HF_LOGIN"
     echo
-    if huggingface-cli download YukunZhou/RETFound_mae_natureCFP \
-         --local-dir "$WEIGHTS" --local-dir-use-symlinks False; then
+    if "${HF_CLI[@]}" download YukunZhou/RETFound_mae_natureCFP --local-dir "$WEIGHTS"; then
       ok "权重就绪"
       echo
       printf '%s把这行加进 ~/.bashrc：%s\n' "$C_BLD" "$C_OFF"
@@ -186,7 +209,11 @@ if [[ $DO_VERIFY -eq 1 ]]; then
   }
 
   check_one "EyePACS train"  35000 "$RAW/eyepacs/train"      "$RAW/eyepacs/trainLabels.csv"
-  check_one "EyePACS test"   53000 "$RAW/eyepacs/test"
+  # 不检查 EyePACS 官方 test：本方案在 35,126 张 train 内部做病人级 70/10/20 切分，
+  # 官方 test 不参与。若它存在反而说明多下了约 49 GB，可以删。
+  if [[ -d "$RAW/eyepacs/test" ]]; then
+    warn "EyePACS 官方 test 存在但本方案用不到，可删除回收约 49 GB：rm -rf $RAW/eyepacs/test"
+  fi
   check_one "APTOS"           3600 "$RAW/aptos/train_images" "$RAW/aptos/train.csv"
   check_one "DDR"            12000 "$RAW/ddr"
   check_one "IDRiD"            500 "$RAW/idrid"

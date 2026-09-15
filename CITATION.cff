@@ -16,7 +16,7 @@ authors:
     given-names: "FIXME"
     affiliation: "FIXME"
 license: MIT
-repository-code: "https://github.com/USERNAME/fedosp"
+repository-code: "https://github.com/Eternity1212/flosp"
 keywords:
   - federated learning
   - diabetic retinopathy

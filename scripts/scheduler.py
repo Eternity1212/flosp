@@ -50,11 +50,13 @@ LOGGER = logging.getLogger("scheduler")
 #: （早前用 "a" 表示消融、"a12" 表示骨干，结果 a12 被两个阶段同时匹配到。）
 STAGES = {
     "sanity": ["s_"],            # 文献锚点核对，**必须先过这关**
-    "main": ["base_", "m_"],     # 11 个基线 + 主方法
+    "main": ["base_", "m_", "ord_", "comb_"],  # 基线 + 主方法 + B17 交叉 + 组合
     "ablation": ["abl_"],        # 组件消融
     "label": ["lab_"],           # 标签效率曲线
     "robust": ["rob_"],          # 参与率 / dropout 压力测试
     "backbone": ["bb_"],         # 骨干替换
+    # 本机 pilot（configs/pilot_local.csv）。产出一律是 tier="pilot"，不可引用。
+    "pilot": ["p_"],
 }
 
 

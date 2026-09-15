@@ -115,12 +115,26 @@ class FrequencyStyleRecalibration(nn.Module):
             mu = amp.mean(dim=(-2, -1), keepdim=True)
             sd = amp.std(dim=(-2, -1), keepdim=True)
             amp_norm = (amp - mu) / (sd + self.eps)
-            # 拉回原量纲。不这么做的话归一化幅度与原幅度差几个数量级，
-            # 门控混合会被其中一支完全支配，梯度也容易爆。
-            amp_norm = amp_norm * sd.detach() + mu.detach()
+            # 拉回量纲，否则归一化幅度与原幅度差几个数量级，门控混合会被其中一支
+            # 完全支配、梯度也容易爆。
+            #
+            # ⚠ 这里必须用**跨通道平均后**的统计量，不能用逐通道的 mu/sd：
+            #     amp_norm * sd + mu == (amp-mu)/sd*sd + mu == amp
+            # 用逐通道 sd/mu 会把归一化精确抵消回去，FSR 退化成恒等映射（曾经的 bug，
+            # 见 test_fsr_gate_interpolates_between_identity_and_normalization）。
+            # 相机/光照差异正是体现在**逐通道**的幅度增益上，所以跨通道拉平才是要的效果；
+            # 保留逐样本维度是为了不引入 batch 依赖（推理时 batch=1 行为一致）。
+            scale = sd.detach().mean(dim=1, keepdim=True)
+            shift = mu.detach().mean(dim=1, keepdim=True)
+            amp_norm = amp_norm * scale + shift
 
             g = self.gate.float().view(1, -1, 1, 1)
             amp_mix = g * amp_norm + (1.0 - g) * amp
+
+            # ⚠ 幅度必须非负：归一化后 amp < mu 的 bin 会变成负数，而 torch.polar 对
+            # 负幅度的处理等价于把相位旋转 π —— 那就直接违背了「相位原样保留」这个
+            # FSR 的立论基础（曾经的 bug，见 test_fsr_preserves_phase_spectrum）。
+            amp_mix = amp_mix.clamp_min(0.0)
 
             # 相位原样保留 —— 这是 FSR 不破坏病灶空间语义的关键
             z_new = torch.fft.ifft2(torch.polar(amp_mix, pha), norm="ortho").real

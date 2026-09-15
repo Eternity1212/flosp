@@ -155,7 +155,7 @@ def predict_and_eval(model, loader, args) -> Dict[str, float]:
         x, y = batch[0], batch[-1]
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
             logits = model(x.to(args.device)).logits
-        probs.append(F.softmax(logits.float(), dim=-1).cpu().numpy())
+        probs.append(model.class_probs(logits).cpu().numpy())
         labels.append(y.numpy())
     return evaluate_predictions(np.concatenate(labels), np.concatenate(probs))
 

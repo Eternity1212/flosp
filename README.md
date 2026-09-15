@@ -5,30 +5,67 @@
 > 冻结的 RETFound ViT-L 骨干 + LoRA，每轮每个 client 只上传 **2.31 MB**（实测），
 > 相比全量同步降低约 **520 倍**通信量。
 
-[![CI](https://github.com/USERNAME/fedosp/actions/workflows/ci.yml/badge.svg)](https://github.com/USERNAME/fedosp/actions/workflows/ci.yml)
+[![CI](https://github.com/Eternity1212/flosp/actions/workflows/ci.yml/badge.svg)](https://github.com/Eternity1212/flosp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
 ---
 
-## 最快上手：三条命令
+## 最快上手：四条命令
+
+**这四条按顺序跑，前三条都不需要真实数据、不需要 GPU。**
 
 ```bash
 # 1) 装环境
 pip install -r requirements.txt
 
-# 2) 冒烟测试：不需要任何真实数据，5 分钟确认代码是通的
+# 2) 理论自检：5 秒，纯 CPU，验证两个创新点的数学命题是否成立
+python scripts/verify_theory.py
+
+# 3) 冒烟测试：不需要任何真实数据，5 分钟确认代码是通的
 bash scripts/run_all.sh --smoke
 
-# 3) 数据齐了之后，一条命令跑完全部实验 + 出表 + 出图
+# 4) 数据齐了之后，一条命令跑完全部实验 + 出表 + 出图
 bash scripts/run_all.sh --gpus 0,1,2,3
 ```
 
-第 3 步会依次做完：环境自检 → 建 manifest → 预处理 → 文献锚点核对 →
-44 个配置 × 多 seed → 生成论文表格 T1–T6 与插图 F2–F7。
-**中断了直接重跑同一条命令**，已完成的配置会自动跳过。
+> 第 2 步值得先跑：它在不花任何 GPU 机时、不等数据审批的前提下，检验"精度加权
+> 聚合"和"序数原型几何"这两个命题在理想条件下是否成立，并输出真实实验的**定量
+> 预测**作为验收标准。见下节。
 
-> ⚠️ **但在这之前，请先花 5 分钟办两件有等待期的事**，详见下一节。
+### 第 4 条就是"一键跑完所有实验"
+
+`scripts/run_all.sh` 是唯一的入口，它把整条流水线串起来，依次完成：
+
+```
+环境自检 → 建 manifest → 图像预处理 → 文献锚点核对（关卡）
+  → 74 个配置 × 多 seed（12 基线 + B17 交叉组 + 主方法 + 消融 + 标签效率 + 鲁棒 + 骨干）
+  → 汇总论文表格 T1–T7 + 插图 F2–F7
+```
+
+| 你的处境 | 用哪条命令 | 耗时 |
+|---|---|---|
+| 有 4 张 A100 | `bash scripts/run_all.sh --gpus 0,1,2,3` | 2–2.5 天 |
+| 有 1 张 A100 | `bash scripts/run_all.sh --gpus 0 --jobs-per-gpu 2` | 8–10 天 |
+| **只有一台 Mac / 没有 GPU** | `bash scripts/run_all.sh --pilot` | **约 2 天**（降规模，见下） |
+| 只想确认代码是通的 | `bash scripts/run_all.sh --smoke` | 5 分钟 |
+| 只想看命令展开对不对 | `bash scripts/run_all.sh --dry-run` | 几秒 |
+
+三个让它好用的性质：
+
+- **断点续跑**：中断后重跑**同一条命令**即可，已有 `result.json` 的配置自动跳过（`--force` 可强制覆盖）。
+- **单个配置崩了不影响全局**：自动重试 `--retries` 次，仍失败则记入 `logs/failed.txt` 并继续跑后面的。
+- **加新实验不用改代码**：往 `configs/experiment_matrix.csv` 加一行，开关写进 `extra_args` 列即可。
+
+只跑其中一段用 `--stage`（可选值见 `bash scripts/run_all.sh --help`）：
+
+```bash
+bash scripts/run_all.sh --stage sanity     # 只跑文献锚点核对
+bash scripts/run_all.sh --stage main       # 只跑主对比
+bash scripts/run_all.sh --stage analyze    # 只重新出表出图（不重跑实验）
+```
+
+> ⚠️ **但在第 4 步之前，请先花 5 分钟办两件有等待期的事**，详见下一节。
 
 ---
 
@@ -104,7 +141,7 @@ bash scripts/run_all.sh --gpus 0,1,2,3
 ### 第 1 步：环境
 
 ```bash
-git clone https://github.com/USERNAME/fedosp.git && cd fedosp
+git clone https://github.com/Eternity1212/flosp.git && cd flosp
 pip install -r requirements.txt
 
 bash scripts/run_all.sh --stage check    # 逐项核对依赖、GPU、数据、权重
@@ -152,7 +189,7 @@ bash scripts/run_all.sh --stage analyze          # 只重新出表出图
 
 产物：
 
-- `tables/` —— T1–T6，每张表三种格式（`.md` 看、`.csv` 加工、`.tex` 直接贴论文）
+- `tables/` —— T1–T7，每张表三种格式（`.md` 看、`.csv` 加工、`.tex` 直接贴论文）
 - `figures/` —— F2–F7，pdf 矢量 + png 位图，字体已嵌入（投稿系统要求）
 - `runs/<exp_id>_seed<n>/` —— 每次实验的 `result.json`、`best.pt`、`predictions.npz`
 - `logs/` —— 每个任务一个日志；失败清单在 `logs/failed.txt`
@@ -187,6 +224,72 @@ bash scripts/run_all.sh --dry-run
 
 ---
 
+## 没有 GPU？本机 pilot（`configs/pilot_local.csv`）
+
+**先说清楚能做什么、不能做什么。** 本机实测（Apple Silicon，12 核 / 36 GB，MPS）：
+
+| 设备 / 骨干 | 吞吐（fwd+bwd, 224） |
+|---|---:|
+| MPS, ViT-Large | **11.4 图/s**（比 A100 慢约 11×） |
+| CPU, ViT-Large | 3.5 图/s |
+| MPS, ViT-Base | 32.1 图/s |
+| MPS, ViT-Small | 84.0 图/s |
+
+显存不是瓶颈（ViT-L @ batch 32 不 OOM），**时间才是**：
+
+| 范围 | 本机墙钟 |
+|---|---:|
+| 单次正式 run（ViT-L / 100 轮 / 全量） | 36 小时 |
+| 全部 74 行正式矩阵（169 run） | **256 天** |
+| 仅 P0 且单 seed（42 run） | 64 天 |
+| **pilot 矩阵（13 行 / 20 run）** | **约 2.1 天** |
+
+pilot 回答的是**方向性**问题（C1、C2 的符号与量级），**不产出可发表数字**。
+
+```bash
+# 零成本前置检查：只看 n_eff 是否≈1.90（2 轮，0.2 h）。★ 先跑这个
+python -m fedosp.run_fed --strategy fedavg --backbone vit_base_patch16_224 \
+    --imagenet-pretrained --train-fraction 0.2 --rounds 2 --out runs/p_neff_check
+
+# 跑整个 pilot 矩阵
+bash scripts/run_all.sh --matrix configs/pilot_local.csv --seeds 0
+```
+
+### ★ pilot 降规模必须按比例，不能用统一上限
+
+C2（精度加权聚合）的收益**完全来自客户端规模不平衡**。用统一上限降规模会把联邦
+变成近似等规模，从而**人为消掉 C2 的全部改进空间** —— pilot 于是得出"C2 没用"，
+但这个结论只是降规模方式的产物：
+
+| 降规模方式 | 客户端规模 | $n_\text{eff}$ | 后果 |
+|---|---|---:|---|
+| 全量（正式） | 24600/6260/2560/372 | **1.75** | — |
+| ❌ `--max-train-per-client 2000` | 2000/2000/2000/372 | **3.34** | C2 改进空间被消掉 |
+| ✅ `--train-fraction 0.2` | 4920/1253/512/372 | **1.90** | 结论可迁移 |
+
+所以用 `--train-fraction 0.2 --min-train-per-client 500`：按同一比例抽样，
+且 ≤500 张的 client（IDRiD 只有 372 张）整体保全 —— 按比例抽会把它的 grade-1
+抽没（全院仅 20 张，20% 只剩 4 张），而它只占 6% 机时，削它没有收益。
+`val`/`test` 一律不降规模，保证指标与正式实验可比。
+这条纪律有测试守护（含统一截断的反例对照），不靠记忆维护。
+
+### `provenance.tier`：防止 pilot 结果被当成正式结果引用
+
+pilot 的 `result.json` 在**格式上与正式结果完全一样**。`--stage main` 那道闸门只拦
+"随机骨干"，拦不住"ViT-Base 跑 30 轮"。所以每个 run 都会自判等级：
+
+```bash
+python -c "import json;p=json.load(open('runs/xxx/result.json'))['provenance'];\
+print(p['tier']);[print(' -',v) for v in p['tier_violations']]"
+# main  → 可引用
+# pilot → 不可引用，并逐条列出差在哪（骨干/分辨率/轮数/权重来源/是否降规模）
+```
+
+`tier="main"` 要求全部满足：ViT-Large、224、≥100 轮、权重来源 `retfound:`、
+`stage=main`、未降规模、非 dry-run。任何一项不满足即 `pilot`，并打 WARNING。
+
+---
+
 ## 代码结构
 
 ```
@@ -201,12 +304,13 @@ fedosp/
 │   │   ├── retfound_lora.py     主模型，含参数三分（上传 / 本地 / 冻结）
 │   │   ├── fsr.py               频域风格校准，支持 token / NHWC / NCHW 三种排布
 │   │   ├── lora.py              LoRALinear + LoRAConv2d（CNN 骨干对照要用）
-│   │   └── prototypes.py        原型库（EMA 更新）与服务器端聚合
+│   │   └── prototypes.py        原型库（EMA 更新 + 抽样方差追踪）与服务器端聚合
 │   ├── fed/
-│   │   ├── strategies.py        8 个联邦策略
+│   │   ├── strategies.py        13 个联邦策略（B3–B16 + FedOSP）
 │   │   ├── client.py            本地训练、原型更新、SCAFFOLD control variate
+│   │   ├── diagnostics.py       ★ 随机效应方差分解（DerSimonian-Laird）与有效客户端数
 │   │   └── flower_adapter.py    可选：接 Flower 跑真实多进程
-│   ├── losses.py                6 项损失 + evidential（FedUAA 复现用）
+│   ├── losses.py                6 项损失 + 4 种序数范式 + evidential（FedUAA 复现用）
 │   ├── metrics.py               QWK / worst-client / macro-over-client / ECE / 锚点核对
 │   ├── stats.py                 DeLong / Wilcoxon / 配对 bootstrap / Holm-Bonferroni
 │   ├── run_fed.py               联邦实验入口
@@ -215,11 +319,12 @@ fedosp/
 │   ├── run_all.sh               ★ 一键入口
 │   ├── scheduler.py             多 GPU 任务池
 │   ├── download_data.sh         数据获取助手
-│   ├── aggregate_results.py     生成 T1–T6
+│   ├── verify_theory.py         ★ 合成验证两个理论命题（纯 CPU，5 秒）
+│   ├── aggregate_results.py     生成 T1–T7
 │   └── make_figures.py          生成 F2–F7
 ├── configs/
 │   ├── default.yaml             默认超参
-│   └── experiment_matrix.csv    ★ 44 个配置，加实验只改这里
+│   └── experiment_matrix.csv    ★ 74 个配置，加实验只改这里
 ├── tests/test_pipeline.py       关键正确性测试
 ├── DATA.md                      ★ 数据获取详细步骤
 └── README.md
@@ -238,7 +343,7 @@ fedosp/
 | 深层等级原型 | P2 | `--no-deep-proto` | `abl_nodeep` |
 | 序数间隔约束 | P2 | `--ordinal-margin 0` | `abl_nomargin` |
 | EMD 序数损失 | P2 | `--lambda-ord 0` | `abl_noord` |
-| client 等权原型聚合 | P3 | `--proto-agg sample` | `abl_proto_sample` |
+| **精度加权原型聚合** | **P3** | `--proto-agg sample` / `client_equal` | `abl_proto_sample` |
 | 本地步数均衡 | P3 | `--steps-rule equal` | `abl_equalsteps` |
 | 本地 LayerNorm | 4.7 | `--no-personal-ln` | `abl_globalln` |
 
@@ -247,6 +352,117 @@ fedosp/
 python -m fedosp.run_fed --strategy fedosp --no-fsr \
     --exp-id abl_nofsr --seed 0 --out runs/abl_nofsr_seed0
 ```
+
+---
+
+## 基线：13 个联邦方法 + 4 种序数范式
+
+每个基线都跑在**同一个 RETFound-LoRA 骨干、同一份 manifest、同一套本地步数规则**上，
+所以主表的差异只能归因到机制本身。`--aux-reg` 对全部 13 个策略同等生效。
+
+| 策略 | 年份 | 改哪一环 | 为什么必须有它 | 额外开销 |
+|---|---|---|---|---|
+| `fedavg` `fedprox` `fedbn` `fedper` `scaffold` | 17–21 | 经典 | 通用参照 | — |
+| `fedproto` | 2022 | 聚合 | 原型联邦、按样本加权，C2 的直接对手 | — |
+| `feduaa` | 2023 | 聚合权重 | 眼科联邦的领域内方法 | — |
+| **`moon`** | 2021 | 本地损失 | C1 的同族最强对手（通用表征对齐） | **计算 1.7x**（每步 3 次前向） |
+| **`fedala`** | 2023 | **下发** | C2 的同族对手：启发式元素级 vs 闭式最优 | 每轮 +5 次迭代学 W |
+| **`qfedavg`** | 2020 | 聚合公式 | `n_eff` 的公平性叙事必须有公平性基线 | — |
+| **`ditto`** | 2021 | 个性化 | 个性化这条线的标准做法 | **计算 2x**（w 与 v 各训一遍） |
+| **`feddg`** | 2021 | 数据 | FSR 的直接对手 | **外传 23 MB 幅度谱** |
+
+```bash
+python -m fedosp.run_fed --strategy moon --moon-mu 1.0      # B12
+python -m fedosp.run_fed --strategy qfedavg --q 1.0         # B14
+python -m fedosp.run_fed --strategy ditto --ditto-lambda 0.1  # B15
+```
+
+### 序数范式（`--ord-type`，B17 交叉组）
+
+`binomial` 与 `ordinal_encoding` **正是 Corbetta MIDL'25 用的两种**，实现它们同时
+建立了与 MIDL'25 的可比性。`coral` / `ordinal_encoding` 会自动把输出头换成 K−1 维，
+并在边界处用 `losses.ordinal_logits_to_probs` 转回 5 类概率 —— 下游所有指标
+（QWK / ECE / DeLong / T6 / T7）完全复用，不需要任何特殊处理。
+
+| `--ord-type` | 输出头 | 机制 | 注意 |
+|---|---|---|---|
+| `none` | K | 纯 CB-CE | 交叉表的左上角基准 |
+| `emd` | K | 累积分布的平方距离 | 本文默认 |
+| `binomial` | K | 以真值为中心的二项软标签 | ⚠ 见下 |
+| `ordinal_encoding` | K−1 | K−1 个**独立**阈值 | 阈值可能自相矛盾 |
+| `coral` | K−1 | K−1 个阈值**共享权重** | 秩单调性由构造保证 |
+
+两条实现上必须知道的性质：
+
+1. **`binomial` 内在压制置信度**。软标签 CE 的最优点在 $\hat p=q$ 而非 one-hot
+   （$y{=}2$ 时最优损失 $=H(q)=1.4075$，而"完美自信"的 peak@2 损失是 6.25）。
+   后果是它在 **ECE 上天然占便宜**，拿它跟普通 CE 比校准是不公平的，必须同时看
+   QWK/MAE 才能判断是真校准好还是只是不自信。argmax 不受影响，QWK/accuracy 照常可比。
+2. **阈值式范式下 CB-CE 关闭**。K−1 列上算 K 类 CE 是错的（不会报错，但类别语义
+   完全错位），所以 `coral`/`ordinal_encoding` 的分类损失全部由阈值 BCE 承担，
+   类别不平衡改由阈值重要性权重承担。
+
+---
+
+## 理论自检：`scripts/verify_theory.py`
+
+两个创新点都是**数学命题**，不是"跑跑看"的经验技巧。既然是数学命题，就该在花掉
+任何 GPU 机时之前先在完全可控的合成数据上检验 —— 不成立就立刻改设计，成立则拿到
+一条定量预测当验收标准（真实结果偏离预测时，能区分"理论错了"和"实现有 bug"）。
+
+```bash
+python scripts/verify_theory.py                # 打印结论，退出码 0 = 两个命题都通过
+python scripts/verify_theory.py --figures out/ # 额外出 5 联图
+```
+
+**结论（2026-09-15）：**
+
+| 命题 | 结论 | 依据 |
+|---|---|---|
+| **精度加权聚合最优** | **无条件通过** | 全 $\tau^2$ 范围内是 MSE 下包络；两个极限特例精确成立（误差 1e−18 / 1e−14）；实测与理论式吻合 <5%；DL 估计相对误差 <15% |
+| 序数几何优于均匀几何 | **有条件通过** | 远端误判必降；但净收益需"基线远端误判率 > ~4.5%"，低噪声区是净亏；效应量 QWK +0.02~0.04 |
+
+**精度加权为什么有意思**：把原型聚合写成随机效应模型 $p_k=\mu+b_k+e_k$ 后，最优权重
+有闭式解 $w_k^\star\propto 1/(\tau^2+v_k)$，而**两种现有做法恰好是它的极限特例**：
+
+| 条件 | 退化为 | 对应方法 |
+|---|---|---|
+| $\tau^2=0$（无域偏移） | $w_k\propto n_k$ | FedProto（按样本量） |
+| $\tau^2\gg v_k$（域偏移主导） | $w_k\to 1/K$ | client 等权 |
+
+于是 A6 消融从"三个拍脑袋选项的横向比较"变成"沿 $\tau^2$ 一条理论曲线的扫描"：
+
+```bash
+# 用 DL 自动估 tau^2（默认）
+python -m fedosp.run_fed --strategy fedosp --proto-agg precision
+# 固定 tau^2 做扫描，验证退化行为
+python -m fedosp.run_fed --strategy fedosp --proto-agg precision --tau2-override 1e-4
+```
+
+**有效客户端数 $n_{\text{eff}}=1/\sum_k w_k^2$** 逐轮写进 `result.json` 的 `history`，
+对**所有策略**都记录（不只 FedOSP），因此是个跨方法诊断量：
+
+| 配置 | $n_{\text{eff}}$(权重) | $n_{\text{eff}}$(复合，含本地步数) |
+|---|---|---|
+| 按样本量 + 按 epoch（朴素 FedAvg 默认） | 1.75 | **1.15** |
+| sqrt 权重 + sqrt 步数 | 2.77 | 1.76 |
+| client 等权 + 等步数（上界） | 4.00 | 4.00 |
+
+> 4 家医院的联邦，用标准配方训练，统计上的有效客户端数只有 **1.15/4** —— 几乎
+> 等于只训了最大的那家。这是"为什么必须重新设计聚合权重"最直接的证据。
+
+**C1 的四条验收标准**（缺一条就不能声称序数几何生效）：
+
+| | 预测 | 若不满足说明什么 |
+|---|---|---|
+| P1 | 远端误判率(T7)下降约 9% | 序数几何没真正生效，原型可能退化回单形 |
+| P2 | accuracy **略降**（约 −0.012） | 若大涨，收益来自别处，不能归因给 C1 |
+| P3 | QWK 改善约 +0.024 | — |
+| P4 | T6 ρ 从 ~0 跃升到 >0.9 | 几何没被改造 |
+
+> ⚠ **T6 高不等于 C1 奏效**：合成实验显示序数结构在预算占比 20% 时 T6 ρ 就已经
+> 到 0.974，而 QWK/accuracy 的权衡还在继续。T6 只证明几何被改造了，不证明改造有
+> 收益。所以上面四条必须一起看。
 
 ---
 
@@ -275,8 +491,8 @@ python -m fedosp.run_fed --strategy fedosp --no-fsr \
 - **主检验放在样本级**：每个 client 的测试样本上做配对 bootstrap（QWK）与 DeLong 检验（AUROC），
   n 是几百到几千，能达到显著
 - **client 级只报方向一致性**（例如"4/4 个 client 全部提升"）作为辅助证据
-- 全部比较统一做 **Holm-Bonferroni** 校正 —— 一次比 8 个基线，
-  不校正的话至少一次假阳性的概率是 34%
+- 全部比较统一做 **Holm-Bonferroni** 校正 —— 一次比 12 个基线，
+  不校正的话至少一次假阳性的概率是 46%
 
 这要求每次实验保存 per-sample 预测，`run_fed.py` 会自动写 `predictions.npz`。
 `scripts/aggregate_results.py` 的 T6 就是基于它生成的。

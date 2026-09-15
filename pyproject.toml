@@ -46,7 +46,7 @@ flower = ["flwr>=1.7"]
 dev = ["pytest>=7.0", "ruff>=0.1", "seaborn>=0.12"]
 
 [project.urls]
-Repository = "https://github.com/USERNAME/fedosp"
+Repository = "https://github.com/Eternity1212/flosp"
 
 [tool.setuptools.packages.find]
 include = ["fedosp*"]

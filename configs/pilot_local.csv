@@ -1,0 +1,14 @@
+exp_id,stage,entrypoint,strategy,backbone,img_size,clients,rounds,seeds,extra_args,est_local_h,priority,note
+p_anchor_aptos,pilot,fedosp.run_central,,vit_base_patch16_224,224,aptos,,0,--imagenet-pretrained --epochs 8,0.6,P0,数据管线体检：单中心 APTOS。QWK 应 >0.75（ImageNet 骨干打不到文献的 0.90，但低于 0.6 说明管线有问题）
+p_neff_check,pilot,fedosp.run_fed,fedavg,vit_base_patch16_224,224,,2,0,--imagenet-pretrained --train-fraction 0.2 --no-fsr --no-shallow-proto --no-deep-proto,0.2,P0,★ 0 成本前置检查：只看 result.json 里 n_eff 是否≈1.90。若被降规模推到 3.x 说明抽样方式错了，后面所有 C2 结论都无效
+p_fedavg,pilot,fedosp.run_fed,fedavg,vit_base_patch16_224,224,,30,0;1,--imagenet-pretrained --train-fraction 0.2 --no-fsr --no-shallow-proto --no-deep-proto --ord-type none --lambda-ord 0,2.8,P0,交叉表左上角：纯 CE 无序数项。所有增益的分母
+p_fedavg_emd,pilot,fedosp.run_fed,fedavg,vit_base_patch16_224,224,,30,0;1,--imagenet-pretrained --train-fraction 0.2 --no-fsr --no-shallow-proto --no-deep-proto --ord-type emd,2.8,P0,★ B17 生死线的最小版：隔离「序数损失的已知增益」。FedOSP 必须赢这一格才算有新东西
+p_fedproto,pilot,fedosp.run_fed,fedproto,vit_base_patch16_224,224,,30,0;1,--imagenet-pretrained --train-fraction 0.2 --no-fsr --ord-type emd,2.8,P0,C2 的直接对手：原型联邦 + 按样本加权聚合
+p_moon_emd,pilot,fedosp.run_fed,moon,vit_base_patch16_224,224,,30,0;1,--imagenet-pretrained --train-fraction 0.2 --no-fsr --no-shallow-proto --no-deep-proto --ord-type emd,4.8,P0,C1 的同族最强对手：通用表征对齐 + 序数损失。机时 1.7x
+p_fedosp,pilot,fedosp.run_fed,fedosp,vit_base_patch16_224,224,,30,0;1,--imagenet-pretrained --train-fraction 0.2,2.9,P0,本文方法完整版（C1+C2+FSR）
+p_c2_only,pilot,fedosp.run_fed,fedosp,vit_base_patch16_224,224,,30,0;1,--imagenet-pretrained --train-fraction 0.2 --no-fsr --ordinal-margin 0,2.9,P0,★ 只开 C2（精度加权），关掉 C1 与 FSR。与 p_fedproto 的差就是 C2 的净效应
+p_c1_only,pilot,fedosp.run_fed,fedosp,vit_base_patch16_224,224,,30,0;1,--imagenet-pretrained --train-fraction 0.2 --no-fsr --proto-agg sample,2.9,P0,★ 只开 C1（序数几何），聚合退回按样本加权。与 p_fedproto 的差就是 C1 的净效应
+p_a6_tau0,pilot,fedosp.run_fed,fedosp,vit_base_patch16_224,224,,30,0,--imagenet-pretrained --train-fraction 0.2 --no-fsr --tau2-override 0,1.4,P1,A6 退化检查：tau2=0 应与 --proto-agg sample 数值一致。对不上说明 C2 实现有问题
+p_a6_tauinf,pilot,fedosp.run_fed,fedosp,vit_base_patch16_224,224,,30,0,--imagenet-pretrained --train-fraction 0.2 --no-fsr --tau2-override 1e6,1.4,P1,A6 退化检查：tau2->inf 应与 --proto-agg client_equal 一致
+p_a4b_margin,pilot,fedosp.run_fed,fedosp,vit_base_patch16_224,224,,30,0,--imagenet-pretrained --train-fraction 0.2 --no-fsr --ordinal-margin 0.25,1.4,P1,A4b 的最小版：合成实验预测 margin 有内部最优，这里只取一个对照点看方向
+p_feddg,pilot,fedosp.run_fed,feddg,vit_base_patch16_224,224,,30,0,--imagenet-pretrained --train-fraction 0.2 --no-shallow-proto --no-deep-proto --ord-type emd --feddg-per-client 10,1.5,P2,FSR 的直接对手。pilot 阶段主要验证幅度谱库能在真实图上跑通 + 量出外传体积

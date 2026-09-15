@@ -190,6 +190,153 @@ def bootstrap_ci(
     }
 
 
+# --------------------------------------------------------------------------- #
+# 序数几何检验（T6 / T7）—— 创新点 C1 的直接证据
+# --------------------------------------------------------------------------- #
+def _spearman(a: np.ndarray, b: np.ndarray) -> float:
+    """Spearman 秩相关，纯 numpy（含并列秩的平均处理）。"""
+    def rank(x: np.ndarray) -> np.ndarray:
+        order = np.argsort(x, kind="mergesort")
+        r = np.empty(len(x), dtype=np.float64)
+        r[order] = np.arange(len(x), dtype=np.float64)
+        # 并列值取平均秩
+        for v in np.unique(x):
+            m = x == v
+            if m.sum() > 1:
+                r[m] = r[m].mean()
+        return r
+
+    ra, rb = rank(np.asarray(a, float)), rank(np.asarray(b, float))
+    sa, sb = ra.std(), rb.std()
+    if sa == 0 or sb == 0:
+        # 一侧完全无变异（例如正交单形的所有成对距离相等）→ 秩相关在数学上未定义。
+        # 这里返回 0 而不是 nan：这个退化情形正是 T6 要检出的「无序数信息」，
+        # 它必须得 0 分并参与后续平均，返回 nan 会让整份汇总表变成 nan。
+        return 0.0
+    return float(((ra - ra.mean()) * (rb - rb.mean())).mean() / (sa * sb))
+
+
+def prototype_geometry_metrics(
+    proto: np.ndarray,
+    num_classes: int = NUM_CLASSES,
+    valid_mask: Optional[Sequence[bool]] = None,
+) -> Dict[str, float]:
+    """**T6**：全局原型的几何是否真的承载了 0→4 的序数结构。
+
+    命题 1 要求的不只是「各类原型互相分开」，而是**原型间距离随等级差单调递增**。
+    一个把 5 个类均匀撒在球面上的编码器（标准 CE 的结果）会让所有成对距离都差不多，
+    T6 上就表现为 ``rho ~ 0``；而序数几何应该给出 ``rho -> 1``。
+
+    Args:
+        proto: ``(C, D)`` 全局原型。
+        valid_mask: ``(C,)`` 哪些类真的有原型。**建议显式传入**（服务器端的 ``seen``
+            掩码就是它）。不传时退化为「零向量 = 未见过」的启发式 —— 在真实流程里
+            原型经过 L2 归一化所以这个启发式是安全的，但对未归一化的原型
+            （例如合成测试里落在原点的类）会误剔。
+
+    Returns:
+        * ``spearman_rho``  —— 成对距离 vs ``|c - y|`` 的 Spearman 相关（**T6 主指标**）
+        * ``linear_r2``     —— 距离对 ``|c - y|`` 做线性回归的 R^2（几何是否近似等距排列）
+        * ``adjacent_violations`` —— 单调性违反率，0 为理想，**0.5 = 全是并列（无信息）**
+        * ``dist_ratio_far_near`` —— 最远等级差距离 / 相邻等级距离，均匀几何下 ~1
+        * ``n_valid_classes``
+
+    退化几何（所有成对距离相等，即标准 CE 倾向学到的正交单形）会得到
+    ``rho=0, R2=0, violations=0.5, ratio=1`` —— 这是 T6 的零假设基准。
+    """
+    proto = np.asarray(proto, dtype=np.float64)
+    if valid_mask is not None:
+        valid = np.where(np.asarray(valid_mask, dtype=bool))[0]
+    else:
+        valid = np.where(np.abs(proto).sum(axis=1) > 0)[0]
+    out = {
+        "spearman_rho": float("nan"),
+        "linear_r2": float("nan"),
+        "adjacent_violations": float("nan"),
+        "dist_ratio_far_near": float("nan"),
+        "n_valid_classes": float(len(valid)),
+    }
+    if len(valid) < 3:
+        return out
+
+    p = proto[valid]
+    d = np.linalg.norm(p[:, None, :] - p[None, :, :], axis=-1)
+    gap = np.abs(valid[:, None] - valid[None, :]).astype(np.float64)
+
+    iu = np.triu_indices(len(valid), k=1)
+    dv, gv = d[iu], gap[iu]
+
+    # 退化判定必须用**相对**容差：正交单形的距离 std 是 2e-16 量级的浮点噪声，
+    # 若只判 `ss_tot > 0` 会让 R^2 在噪声上做回归，算出 -4.5 这种无意义的数。
+    scale = max(float(np.abs(dv).mean()), 1e-30)
+    degenerate = float(dv.std()) / scale < 1e-9
+
+    if degenerate:
+        out.update(spearman_rho=0.0, linear_r2=0.0,
+                   adjacent_violations=0.5, dist_ratio_far_near=1.0)
+        return out
+
+    out["spearman_rho"] = _spearman(gv, dv)
+
+    # 线性回归 R^2
+    a = np.vstack([gv, np.ones_like(gv)]).T
+    coef, *_ = np.linalg.lstsq(a, dv, rcond=None)
+    resid = dv - a @ coef
+    ss_tot = ((dv - dv.mean()) ** 2).sum()
+    out["linear_r2"] = float(1.0 - (resid**2).sum() / ss_tot)
+
+    # 单调性违反：gap 更大的对，距离却不更大。并列记半个违反（标准 tie 处理），
+    # 这样「全部距离相等」得 0.5 而不是 1.0 —— 无信息，而非完全反序。
+    viol = tot = 0.0
+    for i in range(len(dv)):
+        for j in range(len(dv)):
+            if gv[i] > gv[j]:
+                tot += 1.0
+                if dv[i] < dv[j]:
+                    viol += 1.0
+                elif dv[i] == dv[j]:
+                    viol += 0.5
+    out["adjacent_violations"] = float(viol / tot) if tot else float("nan")
+
+    near = dv[gv == 1.0]
+    far = dv[gv == gv.max()]
+    if near.size and far.size and near.mean() > 0:
+        out["dist_ratio_far_near"] = float(far.mean() / near.mean())
+    return out
+
+
+def far_error_metrics(
+    y_true: Sequence[int],
+    y_pred: Sequence[int],
+    num_classes: int = NUM_CLASSES,
+) -> Dict[str, float]:
+    """**T7**：误判的**质量**——错了的时候，是错到隔壁还是错到天边。
+
+    QWK 已经惩罚远端误判，但它是一个被先验分布归一化过的聚合数，看不出误判结构。
+    T7 直接报「错超过 2 个等级」的比例。临床上 grade 0 被判成 grade 4（或反之）
+    才是真正危险的错误，这个指标是 C1 序数几何最该改善的东西。
+
+    Returns:
+        * ``far_error_rate``   —— :math:`P(|\\hat c - y| \\ge 2)`（**T7 主指标**）
+        * ``severe_error_rate`` —— :math:`P(|\\hat c - y| \\ge 3)`
+        * ``far_error_share``  —— 远端误判占**全部误判**的比例（错误结构，与准确率解耦）
+        * ``mean_error_gap``   —— 误判样本的平均等级差
+    """
+    yt = np.asarray(y_true, dtype=int)
+    yp = np.asarray(y_pred, dtype=int)
+    if yt.size == 0:
+        return {k: float("nan") for k in
+                ("far_error_rate", "severe_error_rate", "far_error_share", "mean_error_gap")}
+    gap = np.abs(yt - yp)
+    wrong = gap >= 1
+    return {
+        "far_error_rate": float((gap >= 2).mean()),
+        "severe_error_rate": float((gap >= 3).mean()),
+        "far_error_share": float((gap >= 2).sum() / wrong.sum()) if wrong.any() else 0.0,
+        "mean_error_gap": float(gap[wrong].mean()) if wrong.any() else 0.0,
+    }
+
+
 #: 文献锚点（方案 9.3）：集中式基线必须先对上这几个数再进联邦实验
 LITERATURE_ANCHORS: Dict[str, Dict[str, float]] = {
     "retfound_finetune_auroc": {"aptos": 0.943, "idrid": 0.822, "messidor2": 0.884},

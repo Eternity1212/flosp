@@ -32,6 +32,7 @@ from typing import Dict, List, Optional, Sequence
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .backbones import (
     LAYOUT_TOKENS,
@@ -69,11 +70,20 @@ class FedOSPConfig:
     pretrained_path: Optional[str] = None
     #: 骨干是否用 timm 自带的 ImageNet 预训练（RETFound 权重没批下来时的临时替代）
     imagenet_pretrained: bool = False
+    #: ``"main"`` = 正式实验，随机初始化骨干会**直接报错**；``"smoke"`` = 允许（CI / 调试）。
+    #: 这道闸门的存在理由见 docs：上一个项目曾用 fallback 小模型产出过看起来正常的假结果。
+    stage: str = "smoke"
     drop_path_rate: float = 0.0
     #: B10 基线：解冻整个骨干做全量微调（会让上传量涨到 ~1.2 GB）
     full_finetune: bool = False
     #: B11 基线：visual prompt tuning 的 prompt token 数；0 = 关闭
     num_prompts: int = 0
+    #: 序数输出头（B17 交叉组）。``"none"`` = 标准 K 类 softmax 头；
+    #: ``"ordinal_encoding"`` = K-1 个**独立**阈值 logit；
+    #: ``"coral"`` = K-1 个阈值**共享同一权重向量**、只有偏置不同（秩单调性由构造保证）。
+    #: 非 ``"none"`` 时 ``ForwardOutput.logits`` 是 (B, K-1)，
+    #: 用 ``losses.ordinal_logits_to_probs`` 转回 K 类概率后下游指标完全复用。
+    ordinal_head: str = "none"
 
 
 @dataclass
@@ -109,6 +119,37 @@ def load_retfound_weights(model: nn.Module, path: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+class CoralHead(nn.Module):
+    """CORAL 输出头（Cao, Mirjalili & Raschka 2020）：共享权重 + K-1 个独立偏置。
+
+    .. math:: z_k = w^\\top f + b_k,\\qquad k=1,\\dots,K-1
+
+    只有偏置不同，所以任意样本上 $z_1,\\dots,z_{K-1}$ 的**大小顺序完全由 $b$ 决定、
+    与样本无关**。这就是 CORAL 的 rank-consistency：不会出现
+    $\\sigma(z_2)>\\sigma(z_1)$ 这种"不是 >1 却是 >2"的自相矛盾预测。
+
+    代价是表达力比 K-1 个独立线性头弱（所有阈值共用一个方向），这正是
+    ``ordinal_encoding`` 与它的取舍，B17 里两者都跑就是为了量出这个取舍。
+
+    参数量：``embed_dim + (K-1)``，比标准 K 类头（``embed_dim*K + K``）还少。
+    """
+
+    def __init__(self, dim: int, num_classes: int = 5) -> None:
+        super().__init__()
+        self.num_classes = num_classes
+        self.weight = nn.Parameter(torch.zeros(1, dim))
+        # 偏置初始化成递减序列，让初始预测落在中间等级而不是全 0 或全 4
+        self.bias = nn.Parameter(torch.zeros(num_classes - 1))
+        nn.init.trunc_normal_(self.weight, std=0.01)
+
+    def forward(self, feat: torch.Tensor) -> torch.Tensor:
+        # (B, dim) @ (dim, 1) -> (B, 1)，再广播加 K-1 个偏置
+        return feat @ self.weight.t() + self.bias
+
+    def extra_repr(self) -> str:
+        return f"dim={self.weight.shape[1]}, thresholds={self.num_classes - 1}, shared_weight=True"
+
+
 class FedOSPNet(nn.Module):
     """FedOSP 网络：``forward`` 返回 :class:`ForwardOutput`。"""
 
@@ -130,13 +171,7 @@ class FedOSPNet(nn.Module):
         self.layout = spec.layout
         self.num_prefix = spec.num_prefix_tokens
 
-        if cfg.pretrained_path:
-            load_retfound_weights(self.adapter.model, cfg.pretrained_path)
-        elif not cfg.imagenet_pretrained and cfg.backbone != "debug_vit":
-            LOGGER.warning(
-                "骨干是随机初始化的！正式实验必须传 --pretrained（RETFound_mae_natureCFP），"
-                "或至少加 --imagenet-pretrained。"
-            )
+        self.weight_source = self._init_backbone_weights()
 
         # 换骨干时切点自动按比例换算（A12 用同一条命令跑三个骨干）
         self.split = spec.resolve_split(cfg.fsr_after_block)
@@ -160,12 +195,16 @@ class FedOSPNet(nn.Module):
             nn.init.trunc_normal_(self.prompts, std=0.02)
             LOGGER.info("已启用 visual prompt tuning：%d 个 prompt token", cfg.num_prompts)
 
-        self.head = nn.Linear(self.embed_dim, cfg.num_classes)
-        nn.init.trunc_normal_(self.head.weight, std=0.01)
-        nn.init.zeros_(self.head.bias)
+        self.head = self._build_head()
 
         self.shallow_proto = PrototypeBank(cfg.num_classes, self.shallow_dim, cfg.proto_momentum)
         self.deep_proto = PrototypeBank(cfg.num_classes, self.embed_dim, cfg.proto_momentum)
+        if cfg.ordinal_head != "none":
+            LOGGER.info(
+                "序数输出头 %r 已启用：logits 是 (B, %d)，下游需经 "
+                "ordinal_logits_to_probs 转回 %d 类概率",
+                cfg.ordinal_head, cfg.num_classes - 1, cfg.num_classes,
+            )
 
         # ---- 本地参数名单（LayerNorm / BatchNorm 的仿射）----
         self._personal_keys = {
@@ -188,6 +227,72 @@ class FedOSPNet(nn.Module):
         )
 
     # ---------------------------- 构建辅助 ---------------------------- #
+    def _build_head(self) -> nn.Module:
+        """按 ``cfg.ordinal_head`` 造分类头。
+
+        三种形态（B17 交叉组用后两种）：
+
+        ==================  ===========  ==============================================
+        ``ordinal_head``    输出维度      结构
+        ==================  ===========  ==============================================
+        ``none``            ``K``        标准 ``Linear``，配 softmax
+        ``ordinal_encoding`` ``K-1``     标准 ``Linear``，K-1 个**独立**阈值
+        ``coral``           ``K-1``      **共享权重向量** + K-1 个独立偏置
+        ==================  ===========  ==============================================
+
+        CORAL 的共享权重不是实现上的偷懒，而是它秩单调性的**唯一来源**：所有阈值
+        logit 都是 $w^\\top f + b_k$，彼此只差常数偏置，于是 $\\sigma(z_k)$ 的排序
+        与 $b_k$ 的排序恒等，不可能出现"不是 >1 却是 >2"的自相矛盾（Cao et al. 2020）。
+        若退化成普通 ``Linear(dim, K-1)``，这个保证就没了 —— 那就是 ordinal_encoding。
+        """
+        cfg = self.cfg
+        mode = cfg.ordinal_head
+        if mode not in ("none", "coral", "ordinal_encoding"):
+            raise ValueError(
+                f"未知 ordinal_head={mode!r}，可选 none / coral / ordinal_encoding"
+            )
+        if mode == "coral":
+            return CoralHead(self.embed_dim, cfg.num_classes)
+        out_dim = cfg.num_classes if mode == "none" else cfg.num_classes - 1
+        head = nn.Linear(self.embed_dim, out_dim)
+        nn.init.trunc_normal_(head.weight, std=0.01)
+        nn.init.zeros_(head.bias)
+        return head
+
+    def _init_backbone_weights(self) -> str:
+        """加载骨干权重，并返回权重来源标识（会写进 ``result.json`` 供事后审计）。
+
+        ``stage="main"`` 下随机初始化骨干是 **硬错误**：随机骨干照样能跑完 100 轮并产出
+        格式完全正常的 ``result.json``，这种结果在事后极难分辨，因此必须在启动时就拦住。
+        ``imagenet`` 是方案 R-B 里写明的降级方案，允许但会显著告警并记录来源。
+        """
+        cfg = self.cfg
+        if cfg.pretrained_path:
+            load_retfound_weights(self.adapter.model, cfg.pretrained_path)
+            return f"retfound:{cfg.pretrained_path}"
+
+        if cfg.backbone == "debug_vit":
+            return "random:debug_vit"
+
+        if cfg.imagenet_pretrained:
+            LOGGER.warning(
+                "骨干用的是 ImageNet 预训练，不是 RETFound。这是方案 R-B 的降级路径，"
+                "论文里必须声明，且不能再声称『眼科基础模型』。"
+            )
+            return "imagenet"
+
+        msg = (
+            f"骨干 {cfg.backbone!r} 是**随机初始化**的。stage='main' 下这被视为致命错误：\n"
+            "  - 正式实验请传 --pretrained <RETFound_mae_natureCFP 权重路径>\n"
+            "  - 若 RETFound 权重尚未获批，显式传 --imagenet-pretrained（方案 R-B 降级路径）\n"
+            "  - 仅调试流程请用 --stage smoke 或 --dry-run\n"
+            "拦截原因：随机骨干同样能跑完并产出格式正常的 result.json，事后无法分辨。"
+        )
+        if cfg.stage == "main":
+            raise RuntimeError(msg)
+        LOGGER.warning("%s\n（当前 stage=%r，仅告警放行）", msg, cfg.stage)
+        return "random"
+
     def _inject_lora(self) -> None:
         spec = self.adapter.spec
         blocks = spec.resolve_lora_blocks(self.cfg.lora_last_n_blocks)
@@ -253,6 +358,19 @@ class FedOSPNet(nn.Module):
         return ForwardOutput(
             logits=self.head(deep_feat), deep_feat=deep_feat, shallow_feat=shallow_feat
         )
+
+    def class_probs(self, logits: torch.Tensor) -> torch.Tensor:
+        """把本模型的原始输出统一转成 ``(B, K)`` 类别概率。
+
+        **所有评估路径都必须走这个方法**，不要在外面自己写 ``softmax``。
+        序数头（coral / ordinal_encoding）输出的是 K-1 个阈值 logit，直接 softmax
+        会得到一个 4 维的、含义完全错误的"概率"，而且不会报错 —— QWK 照样能算出
+        一个像样的数字。把转换收敛到这一个方法里，就不存在漏改某条路径的可能。
+        """
+        if self.cfg.ordinal_head == "none":
+            return F.softmax(logits.float(), dim=-1)
+        from ..losses import ordinal_logits_to_probs
+        return ordinal_logits_to_probs(logits, self.cfg.num_classes)
 
     @torch.no_grad()
     def shallow_tokens(self, x: torch.Tensor) -> torch.Tensor:

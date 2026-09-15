@@ -11,6 +11,23 @@ base_scaffold,main,fedosp.run_fed,scaffold,,224,,100,,,,,0;1;2,--no-fsr --no-sha
 base_fedper,main,fedosp.run_fed,fedper,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto,3.3,P0,B7 分类头留本地
 base_fedproto,main,fedosp.run_fed,fedproto,,224,,100,,,,,0;1;2,--no-fsr --proto-agg sample,3.5,P0,B8 原型联邦按样本加权——本文 client 等权聚合的直接对手
 base_feduaa,main,fedosp.run_fed,feduaa,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto,3.5,P0,B9 FedUAA 复现版；论文必须声明是统一骨干下的复现而非原文数字
+base_moon,main,fedosp.run_fed,moon,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --moon-mu 1.0,5.6,P0,B12 MOON（CVPR21）C1 的同族最强对手；每步 3 次前向所以机时是 FedAvg 的 1.7x
+base_fedala,main,fedosp.run_fed,fedala,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto,3.8,P0,B13 FedALA（AAAI23）下发侧元素级插值；C2 的同族对手（启发式 vs 闭式最优）
+base_qfedavg,main,fedosp.run_fed,qfedavg,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --q 1.0,3.5,P0,B14 q-FedAvg（ICLR20）公平性基线；n_eff 叙事必须有它做对照。报 mean 与 worst 两列
+base_ditto,main,fedosp.run_fed,ditto,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --ditto-lambda 0.1,6.8,P0,B15 Ditto（ICML21）个性化基线；本地步数 2x。务必确认 result.json 里 eval_mode=personal
+base_feddg,main,fedosp.run_fed,feddg,,224,,100,,,,,0;1;2,--no-shallow-proto --no-deep-proto --feddg-per-client 10,3.7,P0,B16 FedDG-ELCFS（CVPR21）FSR 的直接对手；需外传幅度谱 23MB，T5 与隐私讨论引用 amplitude_bank_mb
+abl_qfedavg_q0,main,fedosp.run_fed,qfedavg,,224,,100,,,,,0,--no-fsr --no-shallow-proto --no-deep-proto --q 0,1.2,P1,B14 健全性检查：q=0 必须与 base_fedavg 数值一致。对不上说明 q-FedAvg 实现有问题
+abl_qfedavg_q5,main,fedosp.run_fed,qfedavg,,224,,100,,,,,0,--no-fsr --no-shallow-proto --no-deep-proto --q 5,1.2,P1,B14 强公平性档；预期平均 QWK 下降而 worst-client 上升，这是公平性的定义代价不是 bug
+ord_fedavg_none,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --ord-type none --lambda-ord 0,3.3,P0,B17 交叉组基准格：纯 CE 无任何序数项。整张交叉表的左上角
+ord_fedavg_binomial,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --ord-type binomial,3.3,P0,B17 Corbetta MIDL25 范式之一；注意它内在压制置信度所以 ECE 天然占优不可单看
+ord_fedavg_coral,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --ord-type coral,3.3,P0,B17 CORAL 共享权重保证秩单调；自动切 K-1 维输出头
+ord_fedavg_ordenc,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --ord-type ordinal_encoding,3.3,P0,B17 Corbetta MIDL25 范式之二；与 coral 的差只在头结构，用来量出秩一致性的价值
+ord_fedprox_emd,main,fedosp.run_fed,fedprox,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --ord-type emd,3.4,P0,B17 交叉格：证明 EMD 的收益不依赖特定 FL 方法
+ord_moon_emd,main,fedosp.run_fed,moon,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --ord-type emd,5.6,P0,B17 关键格：MOON+EMD 是「通用表征对齐 + 序数损失」的最强朴素组合，FedOSP 必须赢它
+ord_fedala_emd,main,fedosp.run_fed,fedala,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --ord-type emd,3.8,P0,B17 交叉格：FedALA+EMD，C2 的最强朴素对手组合
+ord_fedosp_binomial,main,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--ord-type binomial,3.6,P0,B17 本文方法换序数范式；若 FedOSP 的增益依赖 EMD 而不能迁移到 binomial，需在 limitation 里写明
+ord_fedosp_coral,main,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--ord-type coral,3.6,P1,B17 本文方法 + CORAL；注意阈值式范式下 CB-CE 关闭，类别不平衡改由阈值权重承担
+comb_fedala_c2,main,fedosp.run_fed,fedosp,,224,,100,,,,,0;1,--proto-agg precision,3.8,P2,C2 与 FedALA 机制不冲突（一个在聚合侧一个在下发侧），这一行验证能否叠加
 base_full,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--full-finetune --no-fsr --no-shallow-proto --no-deep-proto --lr 1e-5,8.0,P1,B10 全量微调；上传量约 1.2GB/轮，是通信开销的对照上界
 base_vpt,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--num-prompts 10 --no-fsr --no-shallow-proto --no-deep-proto,3.4,P1,B11 visual prompt tuning，另一种 PEFT 对照
 m_fedosp,main,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,,3.6,P0,本文方法主结果；所有消融以此为基准
@@ -19,8 +36,20 @@ abl_noshallow,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--no-shallow-pr
 abl_nodeep,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--no-deep-proto,3.5,P0,A3 去掉深层等级原型
 abl_nomargin,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--ordinal-margin 0,3.5,P0,A4 去掉序数间隔约束，原型退化成普通原型
 abl_noord,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--lambda-ord 0,3.5,P0,A5 去掉 EMD 序数损失，退回普通交叉熵
-abl_proto_sample,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--proto-agg sample,3.5,P0,A6-a 原型按样本数加权——检验 P3 是否成立（最关键消融之一）
+abl_proto_sample,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--proto-agg sample,3.5,P0,A6-a 原型按样本数加权 = 精度加权在 tau2=0 的极限特例（最关键消融之一）
 abl_proto_sqrt,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--proto-agg sqrt,3.5,P0,A6-b 原型按 sqrt 加权
+abl_proto_equal,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--proto-agg client_equal,3.5,P0,A6-c client 等权 = 精度加权在 tau2->inf 的极限特例（原 v1.0 默认）
+abl_tau2_1e5,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--proto-agg precision --tau2-override 1e-5,1.2,P0,A6-d tau2 扫描点 1e-5（理论翻转点 v_bar=8.2e-4 以下）
+abl_tau2_1e4,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--proto-agg precision --tau2-override 1e-4,1.2,P0,A6-e tau2 扫描点 1e-4
+abl_tau2_1e3,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--proto-agg precision --tau2-override 1e-3,1.2,P0,A6-f tau2 扫描点 1e-3（理论翻转点以上）
+abl_tau2_1e2,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--proto-agg precision --tau2-override 1e-2,1.2,P0,A6-g tau2 扫描点 1e-2
+abl_margin_0125,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--ordinal-margin 0.125,1.2,P0,A4b-a 序数 margin 扫描——合成验证证明该超参有内部最优，必扫
+abl_margin_025,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--ordinal-margin 0.25,1.2,P0,A4b-b
+abl_margin_1,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--ordinal-margin 1.0,1.2,P0,A4b-c
+abl_margin_2,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--ordinal-margin 2.0,1.2,P0,A4b-d
+abl_lproto_005,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--lambda-proto-grade 0.05,1.2,P0,A4c-a lambda_proto 扫描 = 合成实验里 alpha（序数预算占比）的实现对应量；按 accuracy 掉幅<=3点选点
+abl_lproto_03,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--lambda-proto-grade 0.3,1.2,P0,A4c-b
+abl_lproto_1,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--lambda-proto-grade 1.0,1.2,P0,A4c-c
 abl_globalln,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--no-personal-ln,3.5,P1,A7 LayerNorm 也参与聚合
 abl_equalsteps,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--steps-rule equal,3.5,P0,A10 取消本地步数均衡，大 client 步数按比例压小 client
 abl_fsr4,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--fsr-block 4,1.2,P1,A9-a FSR 插在更浅处

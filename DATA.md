@@ -184,21 +184,31 @@ unzip -q messidor2-dr-grades.zip && rm messidor2-dr-grades.zip
 ## 7. RETFound 权重（HF gated，有等待期）
 
 ```bash
-pip install huggingface_hub
+pip install -U huggingface_hub
 
 # 1) 去 https://huggingface.co/YukunZhou/RETFound_mae_natureCFP 点 "Agree and access"
 #    （需要登录 HF 账号，填一个简短表单，等 1-3 天审批）
 # 2) 去 https://huggingface.co/settings/tokens 建一个 read token
-huggingface-cli login          # 粘贴 token
+hf auth login                  # 粘贴 token
 
 # 3) 下载
 mkdir -p weights
-huggingface-cli download YukunZhou/RETFound_mae_natureCFP \
-    --local-dir weights/ --local-dir-use-symlinks False
+hf download YukunZhou/RETFound_mae_natureCFP --local-dir weights/
 
 export RETFOUND_CKPT="$PWD/weights/RETFound_mae_natureCFP.pth"
-echo "export RETFOUND_CKPT=$RETFOUND_CKPT" >> ~/.bashrc
+echo "export RETFOUND_CKPT=$RETFOUND_CKPT" >> ~/.zshrc   # bash 用户改 ~/.bashrc
 ```
+
+> **命令改过名。** `huggingface_hub` 1.x 起 CLI 从 `huggingface-cli` 改为 **`hf`**，
+> `login` 变成 `hf auth login`，并且移除了 `--local-dir-use-symlinks`。
+> 装了却报"找不到命令"，通常是脚本目录不在 PATH：
+> ```bash
+> export PATH="$HOME/Library/Python/3.9/bin:$HOME/.local/bin:$PATH"
+> ```
+> `scripts/download_data.sh --retfound` 两种命令名都兼容，会自动选可用的那个。
+>
+> 没获批时它会明确报 `Access denied. This repository requires approval.`
+> —— 这说明申请还没过，不是脚本坏了。
 
 校验：约 **1.2 GB**，ViT-Large/16（~303 M 参数）。
 加载时 `retfound_lora.py` 会检查 `patch_embed` / `blocks` 是否齐全，

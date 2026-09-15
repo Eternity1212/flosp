@@ -60,12 +60,41 @@ jobs:
               print(f'  OK {bb}: {m.param_report()}')
           EOF
 
-      - name: All strategies run end-to-end (synthetic data)
+      - name: Theory self-check (both propositions)
+        run: python scripts/verify_theory.py
+
+      - name: All 13 strategies run end-to-end (synthetic data)
+        # 这个列表必须与 fedosp.fed.strategies.STRATEGIES 一致；
+        # 下一步会断言两者没有偏差，漏一个策略就红。
         run: |
-          for s in fedavg fedprox fedbn fedper scaffold fedproto feduaa fedosp; do
+          for s in fedavg fedprox fedbn fedper scaffold fedproto feduaa \
+                   moon fedala qfedavg ditto feddg fedosp; do
             echo "::group::strategy $s"
             python -m fedosp.run_fed --dry-run --rounds 3 --strategy "$s" \
                    --out "runs/ci_$s" || exit 1
+            echo "::endgroup::"
+          done
+
+      - name: Every registered strategy was actually exercised above
+        # 防止新增策略后忘记加进上面的循环 —— 那样它永远不被 CI 覆盖，
+        # 而 CI 依然是绿的。这类"沉默的漏测"是最难发现的。
+        run: |
+          python - <<'EOF'
+          import pathlib
+          from fedosp.fed.strategies import STRATEGIES
+          done = {p.name[len('ci_'):] for p in pathlib.Path('runs').glob('ci_*')
+                  if (p / 'result.json').exists()}
+          missing = set(STRATEGIES) - done
+          assert not missing, f'注册了但 CI 没跑到的策略：{sorted(missing)}'
+          print(f'  OK 全部 {len(STRATEGIES)} 个策略均已端到端跑过')
+          EOF
+
+      - name: All 4 ordinal paradigms run end-to-end
+        run: |
+          for t in none emd binomial coral ordinal_encoding; do
+            echo "::group::ord-type $t"
+            python -m fedosp.run_fed --dry-run --rounds 2 --strategy fedosp \
+                   --ord-type "$t" --out "runs/ci_ord_$t" || exit 1
             echo "::endgroup::"
           done
 
@@ -100,10 +129,15 @@ jobs:
           print('  OK 统计检验')
           EOF
 
-      - name: Scheduler dry-run (expands the full experiment matrix)
+      - name: Scheduler dry-run (both matrices fully expand)
+        # 正式矩阵与本机 pilot 矩阵都要能展开。tests/ 里另有一条测试断言
+        # 每一行都恰好归属一个 stage —— 曾经有 10 行 B17 交叉组因为前缀没注册
+        # 而被 --stage all 静默跳过，不报任何错。
         run: |
           python scripts/scheduler.py --stage all --gpus 0 --dry-run \
-                 --matrix configs/experiment_matrix.csv 2>&1 | tail -20
+                 --matrix configs/experiment_matrix.csv 2>&1 | tail -10
+          python scripts/scheduler.py --stage pilot --gpus 0 --dry-run \
+                 --matrix configs/pilot_local.csv 2>&1 | tail -5
 
       - name: Analysis scripts run on synthetic results
         run: |
