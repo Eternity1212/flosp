@@ -28,6 +28,16 @@ python scripts/verify_theory.py
 # 3) 冒烟测试：不需要任何真实数据，5 分钟确认代码是通的
 bash scripts/run_all.sh --smoke
 
+# 3b) ★ 强烈建议：用仿真数据跑通**真实数据路径**（--smoke 走的是合成数据，
+#     绕过了 FundusDataset、路径拼接、目录布局解析和未见中心评估）
+python scripts/make_fixture.py --out data/fixture
+python -m fedosp.data.build_manifest --data-root data/fixture --out data/fixture/manifest.csv
+python -m fedosp.data.preprocess --manifest data/fixture/manifest.csv \
+    --cache-dir data/fixture/cache --out data/fixture/manifest_cached.csv --short-side 64
+python -m fedosp.run_fed --manifest data/fixture/manifest_cached.csv \
+    --strategy fedosp --backbone debug_vit --img-size 64 --rounds 2 \
+    --batch-size 4 --min-steps 2 --max-steps 3 --out runs/fixture
+
 # 4) 数据齐了之后，一条命令跑完全部实验 + 出表 + 出图
 bash scripts/run_all.sh --gpus 0,1,2,3
 ```
@@ -35,6 +45,16 @@ bash scripts/run_all.sh --gpus 0,1,2,3
 > 第 2 步值得先跑：它在不花任何 GPU 机时、不等数据审批的前提下，检验"精度加权
 > 聚合"和"序数原型几何"这两个命题在理想条件下是否成立，并输出真实实验的**定量
 > 预测**作为验收标准。见下节。
+
+> **第 3b 步为什么不能省。** `--dry-run` / `--smoke` 用的是内存里造的合成数据集，
+> **完全不经过 `FundusDataset`**。本项目真的因此踩过坑：真实数据路径上有两个必崩的
+> bug（`mp.Value` 和 DataLoader 迭代器都无法 `deepcopy`），导致
+> **Messidor-2 未见中心评估从未被执行过** —— 而它是论文的第二个主指标。
+> 当时 55 个测试全绿。
+>
+> `scripts/make_fixture.py` 造的是**目录布局、标签文件格式、文件名规则全部与真实
+> 数据一致**的迷你数据集（五个数据集共 196 张假图，画了圆形视野以走真实裁剪分支）。
+> 它能在你花几小时下载 35 GB 之前，就把目录名猜错、路径拼接错这类问题暴露出来。
 
 ### 第 4 条就是"一键跑完所有实验"
 

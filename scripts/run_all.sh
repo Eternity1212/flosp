@@ -45,6 +45,10 @@ SMOKE=0
 DATA_ROOT="${FEDOSP_DATA:-$REPO_ROOT/data}"
 MANIFEST="$DATA_ROOT/manifest.csv"
 CACHE_DIR="$DATA_ROOT/cache"
+#: 预处理会写出一份新的 manifest，其 path 列指向缓存里的小图。
+#: **训练必须读这一份**，否则每个 epoch 都在解码 3888x2592 的原图，
+#: 预处理那 2-4 小时等于白做（而且不会报任何错）。
+CACHED_MANIFEST="$DATA_ROOT/manifest_cached.csv"
 PRETRAINED="${RETFOUND_CKPT:-}"
 RUNS_DIR="$REPO_ROOT/runs"
 LOG_DIR="$REPO_ROOT/logs"
@@ -74,7 +78,8 @@ while [[ $# -gt 0 ]]; do
     --seeds)        SEEDS="$2"; shift 2 ;;
     --retries)      RETRIES="$2"; shift 2 ;;
     --pretrained)   PRETRAINED="$2"; shift 2 ;;
-    --data-root)    DATA_ROOT="$2"; MANIFEST="$2/manifest.csv"; CACHE_DIR="$2/cache"; shift 2 ;;
+    --data-root)    DATA_ROOT="$2"; MANIFEST="$2/manifest.csv"; CACHE_DIR="$2/cache"
+                    CACHED_MANIFEST="$2/manifest_cached.csv"; shift 2 ;;
     --manifest)     MANIFEST="$2"; shift 2 ;;
     --runs-dir)     RUNS_DIR="$2"; shift 2 ;;
     --dry-run)      DRY_RUN="--dry-run"; shift ;;
@@ -207,10 +212,24 @@ stage_data() {
     ok "预处理缓存已存在，跳过：$CACHE_DIR"
   else
     log "预处理（圆形裁剪 + 短边 512 缩放），约 2-4 小时"
+    # --cache-dir 是图像输出目录，--out 是新 manifest 的 CSV 路径，两者不是一回事。
+    # 曾经把 CACHE_DIR 误传给 --out，结果 --cache-dir 缺失直接报错。
     $PY -m fedosp.data.preprocess \
-        --manifest "$MANIFEST" --out "$CACHE_DIR" --workers 8 \
+        --manifest "$MANIFEST" --cache-dir "$CACHE_DIR" --out "$CACHED_MANIFEST" \
+        --workers 8 \
         2>&1 | tee "$LOG_DIR/preprocess.log" || die "预处理失败，见 $LOG_DIR/preprocess.log"
     ok "缓存 → $CACHE_DIR"
+    ok "缓存版 manifest → $CACHED_MANIFEST（训练一律读这份）"
+  fi
+}
+
+# 训练/分析该读哪份 manifest。
+# 有缓存版就必须用它 —— 否则预处理白做，且**不会报任何错**，只是慢十几倍。
+active_manifest() {
+  if [[ -f "$CACHED_MANIFEST" ]]; then
+    echo "$CACHED_MANIFEST"
+  else
+    echo "$MANIFEST"
   fi
 }
 
@@ -222,8 +241,17 @@ run_stage() {
   hdr "阶段 $st"
   [[ -f "$MANIFEST" ]] || die "找不到 manifest（$MANIFEST），先跑 --stage data"
 
+  local mf; mf="$(active_manifest)"
+  if [[ "$mf" == "$MANIFEST" ]]; then
+    warn "用的是未预处理的 manifest（$MANIFEST）"
+    warn "  → 每张图都是原始分辨率（EyePACS 最大 3888x2592），训练会慢十几倍"
+    warn "  → 正式实验请先跑：bash scripts/run_all.sh --stage data"
+  else
+    ok "读缓存版 manifest：$mf"
+  fi
+
   local args=(--stage "$st" --gpus "$GPUS" --jobs-per-gpu "$JOBS_PER_GPU"
-              --seeds "$SEEDS" --retries "$RETRIES" --manifest "$MANIFEST"
+              --seeds "$SEEDS" --retries "$RETRIES" --manifest "$mf"
               --runs-dir "$RUNS_DIR" --log-dir "$LOG_DIR"
               --matrix "$MATRIX")
   [[ -n "$PRETRAINED" ]] && args+=(--pretrained "$PRETRAINED")
@@ -247,14 +275,16 @@ run_stage() {
 stage_analyze() {
   hdr "阶段 analyze：生成论文表格与插图"
 
-  log "汇总表格 T1-T6"
+  local mf; mf="$(active_manifest)"
+
+  log "汇总表格 T1-T7"
   $PY scripts/aggregate_results.py --runs "$RUNS_DIR" --out "$REPO_ROOT/tables" \
-      --manifest "$MANIFEST" 2>&1 | tee "$LOG_DIR/aggregate.log" \
+      --manifest "$mf" 2>&1 | tee "$LOG_DIR/aggregate.log" \
       || warn "汇总有问题，见 $LOG_DIR/aggregate.log"
 
   log "绘制插图 F2-F7"
   $PY scripts/make_figures.py --runs "$RUNS_DIR" --out "$REPO_ROOT/figures" \
-      --manifest "$MANIFEST" 2>&1 | tee "$LOG_DIR/figures.log" \
+      --manifest "$mf" 2>&1 | tee "$LOG_DIR/figures.log" \
       || warn "画图有问题，见 $LOG_DIR/figures.log"
 
   echo

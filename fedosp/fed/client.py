@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import time
@@ -84,6 +85,43 @@ class LocalClient:
         self._round_start: Dict[str, torch.Tensor] = {}
         # 只对会被聚合的参数做 control variate：本地 LayerNorm 从不聚合，无 drift 可言
         self._scaffold_keys = set(self.model.shared_state_dict().keys())
+
+    # ------------------------------------------------------------------ #
+    def __deepcopy__(self, memo: Dict[int, Any]) -> "LocalClient":
+        """深拷贝时**共享** ``loaders`` 而不复制它。
+
+        为什么需要自定义：``run_fed.evaluate_external`` 要 ``deepcopy`` 一个
+        client 当探针（加载全局参数 + 平均 LayerNorm 去测未见中心）。默认的
+        ``deepcopy`` 会一路拷到 ``FundusDataset``，而它持有一个 ``mp.Value``
+        （跨 DataLoader worker 统计读图失败数），于是抛::
+
+            RuntimeError: Synchronized objects should only be shared between
+                          processes through inheritance
+
+        multiprocessing 的同步对象**在设计上**只能通过 fork 继承、不能拷贝。
+
+        而且就算能拷也不该拷：复制一整条数据管线毫无意义（探针用的是外部传入的
+        loader），还会把读图失败计数分叉成两份，让 ``n_failed_reads`` 失真。
+
+        ⚠️ 这个 bug 只在**真实数据路径**上出现 —— ``--dry-run`` 用合成数据集，
+        不经过 ``FundusDataset``，所以全部单测和冒烟测试都没碰到它。
+        对应的回归测试用 ``scripts/make_fixture.py`` 造的仿真数据跑真实路径。
+        """
+        cls = self.__class__
+        new = cls.__new__(cls)
+        memo[id(self)] = new
+        for k, v in self.__dict__.items():
+            if k == "loaders":
+                # 共享引用：数据管线不该被复制（见上）
+                new.loaders = v
+            elif k == "_iter":
+                # 半消耗状态的 DataLoader 迭代器同样不可拷贝
+                # （_SingleProcessDataLoaderIter cannot be pickled），
+                # 而且副本继承"用了一半的迭代器"本身就是错的语义。置空即可重建。
+                new._iter = None
+            else:
+                setattr(new, k, copy.deepcopy(v, memo))
+        return new
 
     # ------------------------------------------------------------------ #
     def _next_batch(self):

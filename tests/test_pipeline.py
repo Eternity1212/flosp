@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -1316,6 +1317,100 @@ def test_pilot_subsampling_keeps_every_grade():
     assert len(_pilot_subsample(idrid, 0.2, 500)) == len(idrid), (
         "IDRiD（372 张）应被完整保留：它只占 6% 机时，削它没有收益却会丢稀有等级"
     )
+
+
+def test_real_data_path_end_to_end_on_fixture(tmp_path):
+    """★ 走**真实数据路径**跑完整条流水线：fixture → manifest → 预处理 → 联邦训练 → 外部评估。
+
+    这条测试是被两个真实 bug 逼出来的，它们的共同点是：**只在真实数据路径上出现，
+    而当时所有单测和冒烟测试都是 ``--dry-run``**（合成数据集，不经过 ``FundusDataset``），
+    所以 55 个测试全绿、13 个策略端到端全过，真实路径却是坏的：
+
+    1. ``FundusDataset`` 持有 ``mp.Value``（跨 worker 统计读图失败数），
+       而 ``evaluate_external`` 要 ``deepcopy(clients[0])`` 当探针 →
+       ``RuntimeError: Synchronized objects should only be shared between
+       processes through inheritance``。
+    2. 修掉上一条后又撞上 ``LocalClient._iter``（半消耗的 DataLoader 迭代器）
+       ``NotImplementedError: _SingleProcessDataLoaderIter cannot be pickled``。
+
+    也就是说：**未见中心评估这一步从来没有被执行过**，而它是论文的第二个主指标。
+
+    这条测试覆盖 dry-run 覆盖不到的部分：五个 builder 的真实目录布局解析、
+    ``FundusDataset`` 真实读图、圆形裁剪预处理、以及 ``evaluate_external`` 的探针深拷贝。
+    """
+    import subprocess
+
+    repo = Path(__file__).resolve().parents[1]
+    root = tmp_path / "fixture"
+
+    def run(args, what, ok_codes=(0,)):
+        r = subprocess.run([sys.executable, *args], cwd=repo,
+                           capture_output=True, text=True)
+        both = r.stdout + r.stderr          # 日志走 stderr
+        assert r.returncode in ok_codes, f"{what} 失败（退出码 {r.returncode}）：\n{both[-2500:]}"
+        return both
+
+    run(["scripts/make_fixture.py", "--out", str(root), "--img-size", "48"], "造 fixture")
+
+    mf = root / "manifest.csv"
+    # build_manifest 在有校验未通过时返回 1。fixture 必然在"与文献规模交叉核对"
+    # 那几项上 FAIL（196 张 vs 53570 张），这是**故意的**设计：保证 fixture 的
+    # manifest 不可能被误当成真实数据。所以这里接受 0/1，靠下面的结构性断言把关。
+    out = run(["-m", "fedosp.data.build_manifest",
+               "--data-root", str(root), "--out", str(mf)],
+              "build_manifest", ok_codes=(0, 1))
+    # 结构性检查必须全过；与文献规模的交叉核对会 FAIL，那是 fixture 的预期行为
+    for must_pass in [
+        "messidor2 全部为 test",          # 未见中心隔离
+        "ddr 已剔除 ungradable",          # DDR 标签 5 不是第 6 个等级
+        "所有 dr_grade 落在 0-4",
+    ]:
+        assert f"PASS {must_pass}" in out or f"PASS  {must_pass}" in out, (
+            f"结构检查 {must_pass!r} 没有 PASS。build_manifest 输出：\n{out[-2000:]}"
+        )
+    assert "[eyepacs] train∩test 的 patient 交集为空" in out, (
+        "EyePACS 的**病人级**防泄漏检查没跑到 —— 它是 DR 数据集最常见的泄漏点"
+    )
+
+    cached = root / "manifest_cached.csv"
+    run(["-m", "fedosp.data.preprocess", "--manifest", str(mf),
+         "--cache-dir", str(root / "cache"), "--out", str(cached),
+         "--workers", "1", "--short-side", "64"], "preprocess")
+    assert cached.exists(), "预处理没写出缓存版 manifest"
+
+    df = pd.read_csv(cached)
+    assert "raw_path" in df.columns, "缺 raw_path，无法追溯原图"
+    assert all("cache" in str(p) for p in df["path"]), (
+        "缓存版 manifest 的 path 仍指向原图 —— 训练会读全分辨率大图，"
+        "预处理等于白做，而且不会报错"
+    )
+    assert all(Path(p).exists() for p in df["path"]), "有缓存图缺失"
+
+    # 真实数据路径的联邦训练。fedosp 是唯一同时用到原型、FSR 和外部评估的策略。
+    out_dir = tmp_path / "run"
+    log = run(["-m", "fedosp.run_fed", "--manifest", str(cached),
+               "--strategy", "fedosp", "--backbone", "debug_vit", "--img-size", "64",
+               "--rounds", "2", "--batch-size", "4", "--min-steps", "2",
+               "--max-steps", "3", "--num-workers", "0", "--device", "cpu",
+               "--out", str(out_dir)], "run_fed（真实数据路径）")
+
+    assert "[external:messidor2]" in log, (
+        "未见中心评估没有执行 —— 它是论文第二个主指标，且正是之前两个 bug 的所在"
+    )
+
+    res = json.loads((out_dir / "result.json").read_text())
+    prov = res["provenance"]
+    assert prov["tier"] == "pilot", "fixture 的结果必须被标成 pilot"
+    # 读图失败数必须是 0：非 0 说明 manifest 的 path 拼接有问题，
+    # 而失败的图会被零图替代 —— 那是**静默污染训练数据**，不是崩溃。
+    assert prov["n_failed_reads"] == 0, (
+        f"有 {prov['n_failed_reads']} 张图读失败，说明路径拼接有问题"
+    )
+    # 外部评估必须真的产出了指标，而不是空 dict
+    assert res["external"] and "qwk" in res["external"], (
+        f"未见中心指标缺失：{res['external']}"
+    )
+    assert (out_dir / "predictions.npz").exists(), "per-sample 预测没落盘，统计检验做不了"
 
 
 def test_squared_distances_matches_cdist_and_needs_no_mps_fallback():
