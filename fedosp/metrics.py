@@ -106,6 +106,40 @@ def referable_auroc(y_true: Sequence[int], probs: np.ndarray) -> float:
     return roc_auc(y, score)
 
 
+def referable_auroc_se(y_true: Sequence[int], auc: Optional[float] = None) -> float:
+    r"""referable AUROC 的 Hanley–McNeil 标准误。
+
+    .. math::
+        \mathrm{SE} = \sqrt{\frac{A(1-A) + (n_1-1)(Q_1-A^2) + (n_0-1)(Q_2-A^2)}{n_1 n_0}}
+
+    其中 :math:`Q_1=A/(2-A)`、:math:`Q_2=2A^2/(1+A)`。
+
+    **为什么必须有这个量。** 锚点校验原来用一个**固定**容差（方案写 ±0.02，
+    代码默认 0.05）去比所有数据集，而各 client 的测试集规模差 68 倍
+    （IDRiD 103 张 vs EyePACS 7000 张）。后果是同一个容差在两端完全失效：
+
+    ==========  ========  ==========  ====================================
+    数据集        n_test    SE          ±0.02 的含义
+    ==========  ========  ==========  ====================================
+    IDRiD          103     0.040       仅 0.48 个 SE → **实现完全正确也约
+                                       63% 概率判 FAIL**
+    EyePACS       7000     0.007       2.9 个 SE → 合理
+    ==========  ========  ==========  ====================================
+
+    所以容差必须随测试集规模缩放，判据应当是"偏离几个 SE"而不是"偏离几个点"。
+    """
+    y = (np.asarray(y_true, int) >= REFERABLE_THRESHOLD).astype(int)
+    n1, n0 = int(y.sum()), int(len(y) - y.sum())
+    if n1 < 1 or n0 < 1:
+        return float("nan")          # 单类测试集上 AUROC 本身无定义
+    A = float(auc) if auc is not None else 0.5
+    A = min(max(A, 1e-6), 1 - 1e-6)
+    q1 = A / (2 - A)
+    q2 = 2 * A * A / (1 + A)
+    var = (A * (1 - A) + (n1 - 1) * (q1 - A * A) + (n0 - 1) * (q2 - A * A)) / (n1 * n0)
+    return float(np.sqrt(max(var, 0.0)))
+
+
 def expected_calibration_error(y_true: Sequence[int], probs: np.ndarray, n_bins: int = 15) -> float:
     """ECE（15 bins），报可靠性。联邦模型常常过自信，这项要如实报。"""
     probs = np.asarray(probs, float)
@@ -128,10 +162,14 @@ def evaluate_predictions(y_true: Sequence[int], probs: np.ndarray) -> Dict[str, 
     """单个 client / 单个数据集上的全套指标。"""
     probs = np.asarray(probs, float)
     y_pred = probs.argmax(axis=1)
+    auroc = referable_auroc(y_true, probs)
     return {
         "qwk": quadratic_weighted_kappa(y_true, y_pred),
         "macro_f1": macro_f1(y_true, y_pred),
-        "referable_auroc": referable_auroc(y_true, probs),
+        "referable_auroc": auroc,
+        # AUROC 的标准误。锚点校验用它把固定容差换成随规模缩放的容差
+        # （IDRiD n=103 时 SE≈0.040，EyePACS n=7000 时 SE≈0.007，差 5.8 倍）
+        "referable_auroc_se": referable_auroc_se(y_true, auroc),
         "ece": expected_calibration_error(y_true, probs),
         "mae": grade_mae(y_true, y_pred),
         "acc": float((np.asarray(y_true, int) == y_pred).mean()),
@@ -348,22 +386,74 @@ LITERATURE_ANCHORS: Dict[str, Dict[str, float]] = {
 }
 
 
+#: 锚点判 OFF 的阈值，单位是**标准误**而非绝对点数。2.5 SE 双侧约 p=0.012。
+ANCHOR_Z = 2.5
+
+#: 容差下限。即使测试集极大（SE→0），文献数字本身也有协议差异
+#: （预处理、增广、epoch 数、是否集成），不该要求完全吻合。
+ANCHOR_FLOOR = 0.02
+
+
 def check_against_anchors(
     per_client: Dict[str, Dict[str, float]],
     anchor: str = "retfound_finetune_auroc",
     key: str = "referable_auroc",
-    tol: float = 0.05,
+    tol: Optional[float] = None,
+    z: float = ANCHOR_Z,
+    floor: float = ANCHOR_FLOOR,
 ) -> Dict[str, str]:
-    """把实测值跟文献锚点比一遍，偏离过大就是实现有 bug（方案第 14 节自查）。"""
+    r"""把实测值跟文献锚点比一遍，偏离过大说明实现有 bug（方案 §4 自查）。
+
+    **容差随测试集规模缩放**，而不是所有数据集用同一个固定值：
+
+    .. math:: \mathrm{tol} = \max(\text{floor},\; z \cdot \mathrm{SE})
+
+    这个改动是被一次真实的误判逼出来的。原来是固定容差（方案写 ±0.02，
+    代码默认 0.05），而各 client 测试集规模差 68 倍：
+
+    ==========  ========  =======  =========  ==========  ===============
+    数据集        n_test    参考      实测       偏差         偏差 / SE
+    ==========  ========  =======  =========  ==========  ===============
+    IDRiD          103     0.822    0.7676     −0.0544     **1.35**（正常）
+    APTOS          732     0.943    0.9753     +0.0323     **3.32**（异常）
+    EyePACS       7000     0.838    0.9006     +0.0627     **9.00**（异常）
+    ==========  ========  =======  =========  ==========  ===============
+
+    固定容差 0.05 会把这三个判成"IDRiD 挂、另两个过" —— **恰好判反了**。
+    IDRiD 只偏 1.35 SE（n=103 时 SE≈0.040，95% CI 宽达 ±0.081），
+    统计上无法判定为异常；而 APTOS/EyePACS 分别偏 3.3 和 9.0 个 SE，
+    才是真正需要查的（用 0.23% 参数的 LoRA 超过全量微调的 ViT-L 不合理，
+    通常意味着指标定义或测试集构成与文献不一致）。
+
+    Args:
+        tol: 传了就退回**固定容差**模式（仅为向后兼容，不建议用于正式校验）。
+        z: 容差取几个标准误。默认 2.5（双侧约 p=0.012）。
+        floor: 容差下限，见 :data:`ANCHOR_FLOOR`。
+
+    Returns:
+        ``{client: "OK|OFF|MISSING ..."}``，字符串里带 SE 与偏差的 SE 倍数，
+        便于事后判断到底是"噪声"还是"实现问题"。
+    """
     ref = LITERATURE_ANCHORS.get(anchor, {})
     report: Dict[str, str] = {}
     for client, expected in ref.items():
-        got = per_client.get(client, {}).get(key)
+        m = per_client.get(client, {})
+        got = m.get(key)
         if got is None or np.isnan(got):
             report[client] = "MISSING"
             continue
         delta = got - expected
-        status = "OK" if abs(delta) <= tol else "OFF"
-        report[client] = f"{status} got={got:.4f} ref={expected:.4f} delta={delta:+.4f}"
+        se = m.get(f"{key}_se")
+        if tol is not None:                      # 固定容差（向后兼容）
+            limit, detail = tol, f"tol={tol:.3f}(fixed)"
+        elif se is None or np.isnan(se) or se <= 0:
+            limit, detail = max(floor, 0.05), "tol=no-SE-fallback"
+        else:
+            limit = max(floor, z * se)
+            detail = f"se={se:.4f} |delta|={abs(delta) / se:.2f}se tol={limit:.3f}(={z}se)"
+        status = "OK" if abs(delta) <= limit else "OFF"
+        report[client] = (
+            f"{status} got={got:.4f} ref={expected:.4f} delta={delta:+.4f} n={m.get('n')} {detail}"
+        )
         LOGGER.info("[anchor:%s] %-10s %s", anchor, client, report[client])
     return report

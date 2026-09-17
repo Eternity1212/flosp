@@ -53,16 +53,27 @@ echo
 echo "=============================================="
 echo " 步骤 4/4  集中式基线 vs 文献锚点"
 echo "   期望：APTOS AUROC≈0.943 / IDRiD≈0.822 / Messidor-2≈0.884"
+echo "   判据 = 2.5 个标准误（随测试集规模缩放），不是固定点数。"
+echo "   理由：IDRiD 只有 103 张（SE≈0.046），EyePACS 有 7000 张（SE≈0.007），"
+echo "        固定 ±0.02 在 IDRiD 上只有 0.48 个 SE，实现正确也约 63% 概率误报。"
 echo "=============================================="
 python -m fedosp.run_central \
     --manifest data/manifest_cached.csv \
     --mode local --clients aptos idrid ddr \
     --pretrained "${PRETRAINED}" \
     --epochs 50 --patience 10 --amp \
-    --check-anchors --anchor-tol 0.05 \
+    --check-anchors \
     --out "${OUT_DIR}"
 
 echo
 echo "结果在 ${OUT_DIR}/result.json 的 anchor_check 字段。"
 echo "全 OK  -> 放行，进入第 3 周的联邦基线"
-echo "有 OFF -> 按这个顺序查：1) 划分是否泄漏 2) 标签列是否读错 3) 预处理是否把视野裁坏"
+echo "有 OFF -> 先看偏差方向，两个方向查的东西完全不同："
+echo "  实测**低于**文献：多半是 epoch 不够 / LoRA 容量不足；"
+echo "                   若偏差 <2 个 SE（小数据集常见），基本是噪声，不必改。"
+echo "  实测**高于**文献：更可疑。用 0.23% 参数的 LoRA 超过全量微调的 ViT-L 不合理。"
+echo "                   查 1) 指标定义（我们报 referable(>=2) 二分类 AUROC，"
+echo "                        文献若报 5 类 macro one-vs-rest 会系统性偏低）"
+echo "                      2) 划分泄漏（APTOS 无 patient_id，若同一病人双眼都在，"
+echo "                        stratified_split 会把它们分到不同 split）"
+echo "                      3) 测试集构成是否与文献一致"

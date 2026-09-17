@@ -230,14 +230,37 @@ def run(args) -> Dict:
         anchor_input = dict(results.get("per_client_test", {}))
         for name, ext in (results.get("external") or {}).items():
             anchor_input.setdefault(HELDOUT_CLIENT, ext)
+        kw = {}
+        if args.anchor_tol is not None:
+            kw["tol"] = args.anchor_tol
+        if args.anchor_z is not None:
+            kw["z"] = args.anchor_z
         results["anchor_check"] = check_against_anchors(
-            anchor_input, "retfound_finetune_auroc", "referable_auroc", tol=args.anchor_tol
+            anchor_input, "retfound_finetune_auroc", "referable_auroc", **kw
         )
         off = [k for k, v in results["anchor_check"].items() if not v.startswith("OK")]
         if off:
             LOGGER.warning(
                 "以下数据集偏离文献锚点：%s —— 先查划分/标签/预处理，不要进联邦实验", off
             )
+            # ★ 方向本身是重要线索，不要只看"过没过"
+            for k in off:
+                v = results["anchor_check"][k]
+                if "delta=+" in v:
+                    LOGGER.warning(
+                        "  [%s] 实测**高于**文献。用 0.23%% 参数的 LoRA 超过全量微调的 "
+                        "ViT-L 并不合理，优先查两件事：① 指标定义是否一致"
+                        "（我们报的是 referable(≥2) 二分类 AUROC，文献若报 5 类 macro "
+                        "one-vs-rest 会系统性偏低）；② 划分是否泄漏"
+                        "（APTOS 无 patient_id，一图一人的假设若不成立，同一病人双眼会跨 split）",
+                        k,
+                    )
+                else:
+                    LOGGER.warning(
+                        "  [%s] 实测**低于**文献。先看偏差的 SE 倍数：小于 2 个 SE 基本是"
+                        "小测试集的正常波动（IDRiD n=103 时 SE≈0.040）；"
+                        "确实超出才查 epoch 数是否够、LoRA 容量是否不足", k,
+                    )
         else:
             LOGGER.info("全部对上文献锚点，数据管线可以放行 ✅")
 
@@ -276,7 +299,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="实验 ID，会写进 result.json 供 aggregate_results.py 分组")
     p.add_argument("--check-anchors", action="store_true",
                    help="与方案 9.3 的文献锚点对数")
-    p.add_argument("--anchor-tol", type=float, default=0.05)
+    p.add_argument("--anchor-tol", type=float, default=None,
+                   help="固定容差（绝对点数）。**默认不传** —— 默认走随测试集规模缩放的 "
+                        "2.5×标准误 判据。固定容差在这里是错的：各 client 测试集规模差 68 倍"
+                        "（IDRiD 103 张 vs EyePACS 7000 张），±0.02 在 IDRiD 上只有 0.48 个 SE，"
+                        "实现完全正确也约 63% 概率判 FAIL")
+    p.add_argument("--anchor-z", type=float, default=None,
+                   help="容差取几个标准误，默认 2.5（双侧约 p=0.012）")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("-v", "--verbose", action="store_true")
     return p

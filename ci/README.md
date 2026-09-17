@@ -49,7 +49,7 @@ git push
 
 | 检查项 | 拦什么 |
 |---|---|
-| `pytest tests/` | 57 个单测 |
+| `pytest tests/` | 58 个单测 |
 | **真实数据路径 fixture** | 用 `make_fixture.py` 造仿真数据跑完整路径。`--dry-run` 绕过 `FundusDataset`，曾因此让未见中心评估从未被执行 |
 | 理论自检 | 两个命题的合成验证 |
 | 骨干兼容性 | ViT / SwinV2 / ResNet 三条结构路径；**本地 norm 不能泄漏进上传集合** |

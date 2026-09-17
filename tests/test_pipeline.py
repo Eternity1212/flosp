@@ -1319,6 +1319,74 @@ def test_pilot_subsampling_keeps_every_grade():
     )
 
 
+def test_anchor_tolerance_scales_with_test_set_size():
+    """★ 锚点容差必须随测试集规模缩放，固定容差会把结论判反。
+
+    这条是被一次真实误判逼出来的。2026-09-17 的 sanity 阶段（真实数据、H100）
+    用固定容差 0.05 跑出：
+
+    ==========  ========  =======  =========  ==========  ==========  =============
+    数据集        n_test    参考      实测       偏差         偏差/SE      固定 0.05 判定
+    ==========  ========  =======  =========  ==========  ==========  =============
+    IDRiD          103     0.822    0.7676     −0.0544     **1.2**     ❌ OFF
+    APTOS          732     0.943    0.9753     +0.0323     **5.0**     ✅ OK
+    ==========  ========  =======  =========  ==========  ==========  =============
+
+    **恰好判反了。** IDRiD 只偏 1.2 个 SE（n=103 时 SE≈0.046，95% CI 宽 ±0.09），
+    统计上无法判定异常；APTOS 偏 5.0 个 SE 才是真问题
+    —— 用 0.23% 参数的 LoRA 超过全量微调的 ViT-L 不合理，
+    通常意味着指标定义或测试集构成与文献不一致。
+
+    方案文档写的 ±0.02 更糟：两个都判 FAIL，且在 IDRiD 上只有 0.48 个 SE，
+    **即使实现完全正确也约 63% 概率误报**。
+    """
+    from fedosp.metrics import check_against_anchors, referable_auroc_se
+
+    def per_client(n, grade_dist, auc):
+        """按真实等级分布构造 referable 正负比例，算出该规模下的 SE。"""
+        frac_ref = sum(grade_dist[2:]) / sum(grade_dist)
+        n1 = round(n * frac_ref)
+        y = [4] * n1 + [0] * (n - n1)
+        return {"referable_auroc": auc,
+                "referable_auroc_se": referable_auroc_se(y, auc),
+                "n": n}
+
+    obs = {
+        "aptos": per_client(732, [1805, 370, 999, 193, 295], 0.9753),
+        "idrid": per_client(103, [134, 20, 136, 74, 49], 0.7676),
+    }
+
+    # SE 必须随规模明显拉开（68 倍规模差 → 数倍 SE 差）
+    se_small = obs["idrid"]["referable_auroc_se"]
+    se_big = obs["aptos"]["referable_auroc_se"]
+    assert se_small > 3 * se_big, (
+        f"IDRiD(n=103) 的 SE {se_small:.4f} 应显著大于 APTOS(n=732) 的 {se_big:.4f}"
+    )
+
+    # 新判据（默认走 2.5 SE）
+    new = check_against_anchors(obs)
+    assert new["idrid"].startswith("OK"), (
+        f"IDRiD 只偏 {abs(0.7676 - 0.822) / se_small:.1f} 个 SE，应判 OK：{new['idrid']}"
+    )
+    assert new["aptos"].startswith("OFF"), (
+        f"APTOS 偏 {abs(0.9753 - 0.943) / se_big:.1f} 个 SE，应判 OFF：{new['aptos']}"
+    )
+
+    # 旧的固定容差 0.05 会给出**相反**结论 —— 这个对照证明上面的断言不是白给的
+    old = check_against_anchors(obs, tol=0.05)
+    assert old["idrid"].startswith("OFF") and old["aptos"].startswith("OK"), (
+        f"固定容差 0.05 本应判反（IDRiD OFF / APTOS OK），实际 {old}；"
+        "若这个对照不成立，本测试就失去意义"
+    )
+
+    # 报告里必须带 SE 和 SE 倍数，否则人看不出"是噪声还是 bug"
+    assert "se=" in new["idrid"] and "se" in new["idrid"], new["idrid"]
+
+    # 单类测试集上 AUROC 无定义，SE 必须是 nan 而不是silently 给个数
+    assert np.isnan(referable_auroc_se([0, 0, 0, 0], 0.9)), "全负样本时 SE 应为 nan"
+    assert np.isnan(referable_auroc_se([4, 4, 4], 0.9)), "全正样本时 SE 应为 nan"
+
+
 def test_exp_mse_constrains_only_the_first_moment():
     """``exp_MSE``（NLDL 2026 竞品损失）只约束分布**均值**，对形状不敏感。
 

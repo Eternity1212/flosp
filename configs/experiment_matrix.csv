@@ -1,7 +1,7 @@
 exp_id,stage,entrypoint,strategy,backbone,img_size,clients,rounds,epochs,label_budget,participation,mode,seeds,extra_args,est_gpu_h,priority,note
-s_anchor_aptos,sanity,fedosp.run_central,,,224,aptos,,15,,,local,0,--check-anchors,0.3,P0,单中心锚点：APTOS QWK 应≈0.90（文献锚点），对不上说明数据管线有问题
+s_anchor_aptos,sanity,fedosp.run_central,,,224,aptos,,15,,,local,0,--check-anchors,0.3,P0,单中心锚点：APTOS AUROC 参考 0.943（SE≈0.006，判据紧）。★ 实测若**高于**文献要查指标定义与划分泄漏（APTOS 无 patient_id），不是好消息
 s_anchor_eyepacs,sanity,fedosp.run_central,,,224,eyepacs,,10,,,local,0,--check-anchors,0.8,P0,单中心锚点：EyePACS QWK 应≈0.80
-s_anchor_idrid,sanity,fedosp.run_central,,,224,idrid,,25,,,local,0,--check-anchors,0.2,P0,单中心锚点：IDRiD 小样本，方差大属正常
+s_anchor_idrid,sanity,fedosp.run_central,,,224,idrid,,25,,,local,0,--check-anchors,0.2,P0,单中心锚点：IDRiD 仅 103 张测试图，AUROC 的 SE≈0.046（95%CI 宽±0.09）。判据是 2.5 个 SE 而非固定点数；偏差<2SE 属噪声不必改
 base_local,main,fedosp.run_central,,,224,eyepacs aptos ddr idrid,,20,,,local,0;1;2,,1.5,P0,B1 四个中心各训各的，证明联邦对 IDRiD 有价值
 base_pooled,main,fedosp.run_central,,,224,eyepacs aptos ddr idrid,,20,,,pooled,0;1;2,,2.4,P0,B2 汇总训练的 oracle 上界（现实中不合法，只作参考）
 base_fedavg,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto,3.3,P0,B3 最基础的联邦基线
