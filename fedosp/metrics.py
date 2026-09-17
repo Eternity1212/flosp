@@ -106,6 +106,35 @@ def referable_auroc(y_true: Sequence[int], probs: np.ndarray) -> float:
     return roc_auc(y, score)
 
 
+def macro_ovr_auroc(y_true: Sequence[int], probs: np.ndarray, num_classes: int = 5) -> float:
+    """5 类 **macro one-vs-rest** AUROC：每个等级各算一次 OvR 再取未加权平均。
+
+    **为什么必须同时报这个。** 我们的主 AUROC 是 referable（≥2）**二分类**，
+    而文献的 AUROC 可能是 5 类 macro OvR —— 两者不可比，且 macro OvR
+    **系统性更低**（稀有等级拖后腿：APTOS 的 grade 3 只占 5.3%）。
+
+    这个差异是 2026-09-17 那次锚点异常的头号嫌疑：
+    APTOS 实测 referable AUROC 0.9753 比 RETFound 全量微调的 0.943 **高 3.3 个 SE**，
+    而我们只训练 0.23% 的参数 —— 若文献报的是 macro OvR，这个"超出"就完全是
+    指标定义造成的假象。
+
+    同时报两个指标可以把这件事一次性定性，且**不需要任何额外训练**
+    （只要 ``predictions.npz`` 还在）。
+
+    等级在测试集中缺失时跳过该类（不计入平均），全缺则返回 ``nan``。
+    """
+    y = np.asarray(y_true, int)
+    p = np.asarray(probs, float)
+    aucs = []
+    for c in range(num_classes):
+        pos = (y == c).astype(int)
+        if pos.sum() == 0 or pos.sum() == len(pos):
+            continue                      # 该等级缺失或占满，OvR 无定义
+        aucs.append(roc_auc(pos, p[:, c]))
+    aucs = [a for a in aucs if not np.isnan(a)]
+    return float(np.mean(aucs)) if aucs else float("nan")
+
+
 def referable_auroc_se(y_true: Sequence[int], auc: Optional[float] = None) -> float:
     r"""referable AUROC 的 Hanley–McNeil 标准误。
 
@@ -170,6 +199,9 @@ def evaluate_predictions(y_true: Sequence[int], probs: np.ndarray) -> Dict[str, 
         # AUROC 的标准误。锚点校验用它把固定容差换成随规模缩放的容差
         # （IDRiD n=103 时 SE≈0.040，EyePACS n=7000 时 SE≈0.007，差 5.8 倍）
         "referable_auroc_se": referable_auroc_se(y_true, auroc),
+        # 5 类 macro OvR AUROC。与 referable 二分类**不可比**且系统性更低；
+        # 同时报出来才能判断文献锚点到底对应哪一个（见 macro_ovr_auroc 的说明）
+        "macro_ovr_auroc": macro_ovr_auroc(y_true, probs),
         "ece": expected_calibration_error(y_true, probs),
         "mae": grade_mae(y_true, y_pred),
         "acc": float((np.asarray(y_true, int) == y_pred).mean()),

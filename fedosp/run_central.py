@@ -135,17 +135,21 @@ def train_one(
 
     if best_state:
         model.load_state_dict(best_state)
+    # per-sample 预测：锚点对不上时最常见的原因是**指标定义**而不是模型，
+    # 存下来就能零 GPU 成本换个指标复算，不必为一个定义问题重训一遍。
+    _raw: Dict[str, np.ndarray] = {}
     return {
         "tag": tag,
         "best_val": best,
-        "test": predict_and_eval(model, test_loader, args) if test_loader else {},
+        "test": predict_and_eval(model, test_loader, args, raw_out=_raw) if test_loader else {},
         "wall_clock_s": time.time() - t0,
         "_model": model,
+        "_raw": _raw,          # run() 会 pop 掉再落盘成 predictions.npz
     }
 
 
 @torch.no_grad()
-def predict_and_eval(model, loader, args) -> Dict[str, float]:
+def predict_and_eval(model, loader, args, raw_out: Optional[Dict] = None) -> Dict[str, float]:
     if loader is None:
         return {}
     model.eval()
@@ -157,13 +161,22 @@ def predict_and_eval(model, loader, args) -> Dict[str, float]:
             logits = model(x.to(args.device)).logits
         probs.append(model.class_probs(logits).cpu().numpy())
         labels.append(y.numpy())
-    return evaluate_predictions(np.concatenate(labels), np.concatenate(probs))
+    y_all, p_all = np.concatenate(labels), np.concatenate(probs)
+    if raw_out is not None:
+        # 存 per-sample 预测。理由很实际：锚点对不上时最常见的问题是
+        # **指标定义**（referable 二分类 vs 5 类 macro OvR），而不是模型。
+        # 存下来就能零 GPU 成本换个指标复算，不必为了一个定义问题重训一遍。
+        raw_out["y"], raw_out["probs"] = y_all, p_all
+    return evaluate_predictions(y_all, p_all)
 
 
 def run(args) -> Dict:
     set_seed(args.seed)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    #: per-sample 预测，落盘成 predictions.npz。用途见 predict_and_eval 的注释：
+    #: 锚点争议绝大多数是指标定义问题，存了就不必为此重训。
+    raw_preds: Dict[str, np.ndarray] = {}
     manifest = (
         make_fake_manifest(out_dir / "fake") if args.dry_run else load_manifest(Path(args.manifest))
     )
@@ -196,7 +209,12 @@ def run(args) -> Dict:
                 batch_size=args.batch_size, num_workers=args.num_workers,
             )
             if "test" in loaders:
-                per_client[c] = predict_and_eval(models["pooled"], loaders["test"], args)
+                _r: Dict = {}
+                per_client[c] = predict_and_eval(
+                    models["pooled"], loaders["test"], args, raw_out=_r)
+                if _r:
+                    raw_preds[f"{c}__y"] = _r["y"]
+                    raw_preds[f"{c}__probs"] = _r["probs"]
         results["per_client_test"] = per_client
         results["summary"] = aggregate_over_clients(per_client, "qwk")
     else:
@@ -208,6 +226,10 @@ def run(args) -> Dict:
                 continue
             r = train_one(sub, c, args, model_cfg)
             models[c] = r.pop("_model")
+            _r = r.pop("_raw", None) or {}
+            if _r:
+                raw_preds[f"{c}__y"] = _r["y"]
+                raw_preds[f"{c}__probs"] = _r["probs"]
             results[c] = r
             per_client[c] = r["test"]
         results["per_client_test"] = per_client
@@ -265,6 +287,13 @@ def run(args) -> Dict:
             LOGGER.info("全部对上文献锚点，数据管线可以放行 ✅")
 
     results.pop("_model", None)
+    if raw_preds:
+        np.savez_compressed(out_dir / "predictions.npz", **raw_preds)
+        LOGGER.info(
+            "per-sample 预测已存入 %s —— 锚点对不上时先用它换指标复算"
+            "（scripts/recheck_anchors.py），不要直接重训",
+            out_dir / "predictions.npz",
+        )
     (out_dir / "result.json").write_text(
         json.dumps(results, indent=2, ensure_ascii=False, default=float), encoding="utf-8"
     )
