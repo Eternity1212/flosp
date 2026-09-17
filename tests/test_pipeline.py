@@ -1319,6 +1319,70 @@ def test_pilot_subsampling_keeps_every_grade():
     )
 
 
+def test_exp_mse_constrains_only_the_first_moment():
+    """``exp_MSE``（NLDL 2026 竞品损失）只约束分布**均值**，对形状不敏感。
+
+    出处：Stelter, Corbetta, ..., Silva, *Preserving Ordinality in Diabetic
+    Retinopathy Grading through a Distribution-Based Loss Function*,
+    NLDL 2026, PMLR 307:405-414。与本文同任务、数据集重叠三个，
+    所以必须进 B17 交叉组当对照。
+
+    这条测试把它与平方 EMD 的**本质差异**钉下来：取 :math:`y=2, K=5` 时，
+    极端双峰 ``[.5,0,0,0,.5]`` 与完全均匀 ``[.2]*5`` 的均值恰好都是 2，
+    于是 ``exp_MSE`` 给它们**零惩罚**；而平方 EMD 约束整条累积分布，
+    会分别罚 0.20 和 0.08。
+
+    这不是为了贬低对手 —— 他们仓库里有 ``--lamda``，实际用法应是
+    ``CE + λ·exp_MSE``，CE 会补掉这个退化。记录它是为了让消融
+    （A5 / B17）出现"exp_MSE 单用时校准差"这类结果时，我们**事先就知道原因**，
+    而不是事后编解释。
+    """
+    from fedosp.losses import (
+        ORDINAL_LOSSES,
+        expectation_mse_loss,
+        ordinal_loss_by_type,
+        squared_emd_loss,
+    )
+
+    assert "exp_mse" in ORDINAL_LOSSES, "exp_mse 必须注册进 ORDINAL_LOSSES，否则 CLI 认不出"
+
+    K, y = 5, 2
+    target = torch.tensor([y])
+    # 用极大 logit 精确构造目标概率分布（softmax 的数值近似）
+    def as_logits(p):
+        return torch.log(torch.tensor([p], dtype=torch.float32).clamp_min(1e-12))
+
+    cases = {
+        "perfect":  [0.0, 0.0, 1.0, 0.0, 0.0],
+        "adjacent": [0.0, 0.5, 0.5, 0.0, 0.0],
+        "bimodal":  [0.5, 0.0, 0.0, 0.0, 0.5],
+        "uniform":  [0.2, 0.2, 0.2, 0.2, 0.2],
+    }
+    got = {k: (float(expectation_mse_loss(as_logits(p), target, K)),
+               float(squared_emd_loss(as_logits(p), target, K)))
+           for k, p in cases.items()}
+
+    # 均值恰为 2 的三种分布，exp_MSE 一律为 0
+    for k in ("perfect", "bimodal", "uniform"):
+        assert got[k][0] < 1e-6, (
+            f"{k} 的均值是 2，exp_MSE 本应为 0，实际 {got[k][0]:.4f}"
+        )
+    # 而平方 EMD 必须能区分它们
+    assert got["perfect"][1] < 1e-6, "完美单峰的 EMD 应为 0"
+    assert got["bimodal"][1] > got["uniform"][1] > 1e-3, (
+        f"平方 EMD 应当罚双峰 > 均匀 > 0，实际 "
+        f"双峰 {got['bimodal'][1]:.4f} / 均匀 {got['uniform'][1]:.4f}"
+    )
+    # 相邻单峰：均值偏了，所以两者都非零（这是唯一 exp_MSE 有反应的情形）
+    assert got["adjacent"][0] > 0 and got["adjacent"][1] > 0
+
+    # 派发与梯度
+    logits = torch.randn(4, K, requires_grad=True)
+    loss = ordinal_loss_by_type("exp_mse", logits, torch.randint(0, K, (4,)), K)
+    loss.backward()
+    assert logits.grad is not None and float(logits.grad.abs().sum()) > 0, "梯度没传回来"
+
+
 def test_real_data_path_end_to_end_on_fixture(tmp_path):
     """★ 走**真实数据路径**跑完整条流水线：fixture → manifest → 预处理 → 联邦训练 → 外部评估。
 

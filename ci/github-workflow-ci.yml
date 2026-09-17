@@ -89,9 +89,9 @@ jobs:
           print(f'  OK 全部 {len(STRATEGIES)} 个策略均已端到端跑过')
           EOF
 
-      - name: All 4 ordinal paradigms run end-to-end
+      - name: All 5 ordinal paradigms run end-to-end
         run: |
-          for t in none emd binomial coral ordinal_encoding; do
+          for t in none emd binomial coral ordinal_encoding exp_mse; do
             echo "::group::ord-type $t"
             python -m fedosp.run_fed --dry-run --rounds 2 --strategy fedosp \
                    --ord-type "$t" --out "runs/ci_ord_$t" || exit 1

@@ -333,7 +333,7 @@ fedosp/
 │   │   ├── client.py            本地训练、原型更新、SCAFFOLD control variate
 │   │   ├── diagnostics.py       ★ 随机效应方差分解（DerSimonian-Laird）与有效客户端数
 │   │   └── flower_adapter.py    可选：接 Flower 跑真实多进程
-│   ├── losses.py                6 项损失 + 4 种序数范式 + evidential（FedUAA 复现用）
+│   ├── losses.py                6 项损失 + 5 种序数范式 + evidential（FedUAA 复现用）
 │   ├── metrics.py               QWK / worst-client / macro-over-client / ECE / 锚点核对
 │   ├── stats.py                 DeLong / Wilcoxon / 配对 bootstrap / Holm-Bonferroni
 │   ├── run_fed.py               联邦实验入口
@@ -378,7 +378,7 @@ python -m fedosp.run_fed --strategy fedosp --no-fsr \
 
 ---
 
-## 基线：13 个联邦方法 + 4 种序数范式
+## 基线：13 个联邦方法 + 5 种序数范式
 
 每个基线都跑在**同一个 RETFound-LoRA 骨干、同一份 manifest、同一套本地步数规则**上，
 所以主表的差异只能归因到机制本身。`--aux-reg` 对全部 13 个策略同等生效。
@@ -414,8 +414,9 @@ python -m fedosp.run_fed --strategy ditto --ditto-lambda 0.1  # B15
 | `binomial` | K | 以真值为中心的二项软标签 | ⚠ 见下 |
 | `ordinal_encoding` | K−1 | K−1 个**独立**阈值 | 阈值可能自相矛盾 |
 | `coral` | K−1 | K−1 个阈值**共享权重** | 秩单调性由构造保证 |
+| **`exp_mse`** | K | 期望与真值的平方误差 $\big(\sum_c c\,p_c-y\big)^2$ | ★ 见下第 3 条 |
 
-两条实现上必须知道的性质：
+三条实现上必须知道的性质：
 
 1. **`binomial` 内在压制置信度**。软标签 CE 的最优点在 $\hat p=q$ 而非 one-hot
    （$y{=}2$ 时最优损失 $=H(q)=1.4075$，而"完美自信"的 peak@2 损失是 6.25）。
@@ -424,6 +425,25 @@ python -m fedosp.run_fed --strategy ditto --ditto-lambda 0.1  # B15
 2. **阈值式范式下 CB-CE 关闭**。K−1 列上算 K 类 CE 是错的（不会报错，但类别语义
    完全错位），所以 `coral`/`ordinal_encoding` 的分类损失全部由阈值 BCE 承担，
    类别不平衡改由阈值重要性权重承担。
+3. **`exp_mse` 只约束一阶矩**。它来自 Stelter/**Corbetta**/Silva,
+   *Preserving Ordinality in DR Grading through a Distribution-Based Loss*,
+   **NLDL 2026**（PMLR 307:405–414，[代码](https://github.com/Trustworthy-AI-UU-NKI/Ordinal-DR-Grading)）
+   —— 同一个组、同一任务、数据集与本文重叠三个（APTOS/IDRiD/DDR），所以它是
+   **B17 里当前最强的序数对照，不能不放**。
+
+   但它对分布**形状**完全不敏感。取 $y{=}2, K{=}5$：
+
+   | 预测分布 | 均值 | `exp_mse` | `emd` |
+   |---|---:|---:|---:|
+   | $[0,0,1,0,0]$ | 2.00 | 0.000 | 0.000 |
+   | $[0,.5,.5,0,0]$ | 1.50 | 0.250 | 0.050 |
+   | $[.5,0,0,0,.5]$ | 2.00 | **0.000** | 0.200 |
+   | $[.2,.2,.2,.2,.2]$ | 2.00 | **0.000** | 0.080 |
+
+   极端双峰与完全均匀的均值恰好都是 2，于是它给**零惩罚**。
+   公允地说：原仓库有 `--lamda`，实际用法应是 `CE + λ·exp_MSE`，CE 会补掉这个退化；
+   本项目的损失结构正是 `CB-CE + λ_ord·L_ord`，所以这是**忠实复现而非削弱版**。
+   记录它是为了在消融出现"`exp_mse` 校准较差"时**事先就知道机制**，而不是事后编解释。
 
 ---
 

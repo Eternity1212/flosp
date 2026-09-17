@@ -27,6 +27,9 @@ ord_moon_emd,main,fedosp.run_fed,moon,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-
 ord_fedala_emd,main,fedosp.run_fed,fedala,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --ord-type emd,3.8,P0,B17 交叉格：FedALA+EMD，C2 的最强朴素对手组合
 ord_fedosp_binomial,main,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--ord-type binomial,3.6,P0,B17 本文方法换序数范式；若 FedOSP 的增益依赖 EMD 而不能迁移到 binomial，需在 limitation 里写明
 ord_fedosp_coral,main,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--ord-type coral,3.6,P1,B17 本文方法 + CORAL；注意阈值式范式下 CB-CE 关闭，类别不平衡改由阈值权重承担
+ord_fedavg_expmse,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--no-fsr --no-shallow-proto --no-deep-proto --ord-type exp_mse,3.3,P0,★ B17 必答：Stelter/Corbetta NLDL2026 的 exp_MSE，同任务同数据集且报告优于其它序数损失。缺这格则缺当前最强序数对照
+ord_fedosp_expmse,main,fedosp.run_fed,fedosp,,224,,100,,,,,0;1;2,--ord-type exp_mse,3.4,P0,★ FedOSP 换用竞品损失：若 C1/C2 的增益与序数损失选择正交，这格应与 m_fedosp 接近
+abl_ord_expmse,ablation,fedosp.run_fed,fedosp,,224,,100,,,,,0,--no-fsr --ord-type exp_mse,1.2,P1,A5 消融：exp_MSE 只约束一阶矩（见 test_exp_mse_constrains_only_the_first_moment），预期 ECE/Brier 弱于 EMD
 comb_fedala_c2,main,fedosp.run_fed,fedosp,,224,,100,,,,,0;1,--proto-agg precision,3.8,P2,C2 与 FedALA 机制不冲突（一个在聚合侧一个在下发侧），这一行验证能否叠加
 base_full,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--full-finetune --no-fsr --no-shallow-proto --no-deep-proto --lr 1e-5,8.0,P1,B10 全量微调；上传量约 1.2GB/轮，是通信开销的对照上界
 base_vpt,main,fedosp.run_fed,fedavg,,224,,100,,,,,0;1;2,--num-prompts 10 --no-fsr --no-shallow-proto --no-deep-proto,3.4,P1,B11 visual prompt tuning，另一种 PEFT 对照

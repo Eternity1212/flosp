@@ -97,10 +97,54 @@ def squared_emd_loss(logits: torch.Tensor, target: torch.Tensor, num_classes: in
 #: 支持的序数损失范式。``emd`` 是本文默认；后三个用于 B17「现成 FL 方法 × 序数损失」
 #: 交叉组，其中 ``binomial`` 与 ``ordinal_encoding`` **正是 Corbetta MIDL 2025 用的两种**，
 #: 实现它们的额外好处是直接建立与 MIDL'25 的可比性（设计文档 §3.3）。
-ORDINAL_LOSSES = ("none", "emd", "binomial", "coral", "ordinal_encoding")
+ORDINAL_LOSSES = ("none", "emd", "binomial", "coral", "ordinal_encoding", "exp_mse")
 
 #: 需要 K-1 维输出头的范式（见 ``FedOSPConfig.ordinal_head``）
 ORDINAL_HEAD_LOSSES = ("coral", "ordinal_encoding")
+
+
+def expectation_mse_loss(
+    logits: torch.Tensor, target: torch.Tensor, num_classes: int = 5
+) -> torch.Tensor:
+    r"""Expectation MSE（``exp_MSE``）：预测分布**期望**与真值的平方误差。
+
+    .. math:: L = \Big(\sum_{c} c\,p_c - y\Big)^2
+
+    出处：Stelter, **Corbetta**, Lakbir, Beets-Tan, Cruz, Cardoso, **Silva**,
+    *Preserving Ordinality in Diabetic Retinopathy Grading through a
+    Distribution-Based Loss Function*, **NLDL 2026**, PMLR 307:405–414。
+    代码 ``github.com/Trustworthy-AI-UU-NKI/Ordinal-DR-Grading``。
+
+    **为什么必须实现它**：这是 Corbetta/Silva 组 2026 年 1 月发表的新损失，
+    任务与本文完全相同（5 级序数 DR 分级），数据集与我们重叠三个
+    （APTOS / IDRiD / DDR），并且他们在五个公开 DR 数据集上报告它
+    **优于 CE 与其它序数损失**。不把它放进 B17 交叉组，
+    "FedOSP 的序数处理更好"这个说法就缺了当前最强的对照。
+
+    **一个必须注意的性质**：它只约束分布的**一阶矩**，对形状完全不敏感。
+    取 :math:`y=2, K=5`：
+
+    ==========================  ======  =========  ==========
+    预测分布                      均值    exp_MSE    平方 EMD
+    ==========================  ======  =========  ==========
+    ``[0, 0, 1, 0, 0]``          2.00     0.000      0.000
+    ``[0, .5, .5, 0, 0]``        1.50     0.250      0.050
+    ``[.5, 0, 0, 0, .5]``        2.00     **0.000**  0.200
+    ``[.2, .2, .2, .2, .2]``     2.00     **0.000**  0.080
+    ==========================  ======  =========  ==========
+
+    极端双峰与完全均匀分布的均值恰好都是 2，于是 ``exp_MSE`` 给它们**零惩罚** ——
+    原文称它 "promotes unimodal predictions"，在这两个反例上并不成立。
+    平方 EMD 约束整条累积分布，能区分形状。
+
+    不过要公允：他们仓库里有 ``--lamda`` 超参，说明实际用法应是
+    ``CE + λ·exp_MSE``，CE 会把概率质量压到真值类上，从而补掉这个退化。
+    本文的损失结构恰好是 ``CB-CE + λ_ord·L_ord``，所以
+    ``--ord-type exp_mse`` 就是对他们formulation 的忠实复现，而非削弱版。
+    """
+    p = F.softmax(logits, dim=-1)
+    grades = torch.arange(num_classes, device=p.device, dtype=p.dtype)
+    return ((p * grades).sum(-1) - target.to(p.dtype)).pow(2).mean()
 
 
 def binomial_unimodal_ce(
@@ -248,6 +292,8 @@ def ordinal_loss_by_type(
         return squared_emd_loss(logits, target, num_classes)
     if ord_type == "binomial":
         return binomial_unimodal_ce(logits, target, num_classes)
+    if ord_type == "exp_mse":
+        return expectation_mse_loss(logits, target, num_classes)
     if ord_type in ORDINAL_HEAD_LOSSES:
         return ordinal_binary_ce(logits, target, num_classes)
     raise ValueError(f"未知序数损失 {ord_type!r}，可选 {ORDINAL_LOSSES}")
