@@ -61,6 +61,10 @@ STAGES = {
     "backbone": ["bb_"],         # 骨干替换
     # 本机 pilot（configs/pilot_local.csv）。产出一律是 tier="pilot"，不可引用。
     "pilot": ["p_"],
+    # 基准论文的方法横评（configs/benchmark_matrix.csv）。
+    # 与上面的 base_ 不同之处在于 seed：这里固定用 3–7，即从未参与过组件筛选的
+    # 干净区间，因此可以和已有的 10 对确认实验（seed 3–12）严格配对。
+    "bench": ["bench_", "diag_"],
 }
 
 
@@ -229,12 +233,16 @@ def build_jobs(
     manifest: Path,
     force: bool = False,
     extra: Sequence[str] = (),
+    priorities: Optional[Sequence[str]] = None,
 ) -> List[Job]:
     """读实验矩阵 CSV，展开成 Job 列表。
 
     Args:
         stage: ``all`` 或 :data:`STAGES` 里的键。
         force: 为 True 时连已有 result.json 的配置也重跑。
+        priorities: 只跑这些优先级（匹配 CSV 的 priority 列）。
+            基准矩阵分了 A/B/C 三层共 152 GPU·h，一次全押风险太大；
+            按层跑可以先拿到 A 层的紧 CI 再决定要不要继续。
 
     Returns:
         待跑的 Job（已过滤掉完成的）。
@@ -259,6 +267,8 @@ def build_jobs(
             if not exp_id or exp_id.startswith("#"):
                 continue
             if prefixes and not any(exp_id.startswith(p) for p in prefixes):
+                continue
+            if priorities and (row.get("priority") or "").strip() not in priorities:
                 continue
 
             which = _stage_of(exp_id)
@@ -381,6 +391,9 @@ def main() -> int:
     ap.add_argument("--manifest", type=Path, default=ROOT / "data" / "manifest.csv")
     ap.add_argument("--retries", type=int, default=1)
     ap.add_argument("--timeout-h", type=float, default=12.0)
+    ap.add_argument("--priority", default="",
+                    help="只跑指定优先级，逗号分隔。基准矩阵用 A/B/C/D 分层，"
+                         "如 --priority A 先跑紧 CI 那一层（77 GPU·h）")
     ap.add_argument("--force", action="store_true", help="重跑已完成的配置")
     ap.add_argument("--dry-run", action="store_true", help="只打印命令不执行")
     ap.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
@@ -401,6 +414,7 @@ def main() -> int:
         jobs = build_jobs(
             args.matrix, st, args.runs_dir, seeds, args.pretrained,
             args.data_root, args.manifest, args.force, args.extra,
+            [p.strip() for p in args.priority.split(",") if p.strip()] or None,
         )
         if not jobs:
             continue

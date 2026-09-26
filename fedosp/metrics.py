@@ -187,6 +187,23 @@ def expected_calibration_error(y_true: Sequence[int], probs: np.ndarray, n_bins:
     return float(ece)
 
 
+def multiclass_brier(y_true: Sequence[int], probs: np.ndarray) -> float:
+    """多分类 Brier 分数：$\\frac1N\\sum_i\\sum_k (p_{ik}-o_{ik})^2$，取值 $[0,2]$。
+
+    ECE 只看置信度与准确率在分箱后的平均偏差，对**整个概率向量**的形状不敏感；
+    一个把概率质量摊在错误等级上的模型，ECE 可以很好看而 Brier 会变差。
+    DR 分级是有序任务，概率质量落在哪一级有临床含义，所以两个都要报。
+
+    Note:
+        用的是 $[0,2]$ 区间的定义（不除以 2）。文献里两种约定都有，
+        跨论文比较绝对值之前必须先对齐口径。
+    """
+    probs = np.asarray(probs, float)
+    onehot = np.zeros_like(probs)
+    onehot[np.arange(len(probs)), np.asarray(y_true, int)] = 1.0
+    return float(((probs - onehot) ** 2).sum(axis=1).mean())
+
+
 def evaluate_predictions(y_true: Sequence[int], probs: np.ndarray) -> Dict[str, float]:
     """单个 client / 单个数据集上的全套指标。"""
     probs = np.asarray(probs, float)
@@ -203,6 +220,7 @@ def evaluate_predictions(y_true: Sequence[int], probs: np.ndarray) -> Dict[str, 
         # 同时报出来才能判断文献锚点到底对应哪一个（见 macro_ovr_auroc 的说明）
         "macro_ovr_auroc": macro_ovr_auroc(y_true, probs),
         "ece": expected_calibration_error(y_true, probs),
+        "brier": multiclass_brier(y_true, probs),
         "mae": grade_mae(y_true, y_pred),
         "acc": float((np.asarray(y_true, int) == y_pred).mean()),
         "n": int(len(y_true)),

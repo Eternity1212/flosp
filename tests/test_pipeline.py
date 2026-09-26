@@ -1629,7 +1629,7 @@ def test_every_matrix_row_is_reachable_by_exactly_one_stage():
         f"阶段前缀互为前缀会导致同一配置被跑两遍：{overlap}"
     )
 
-    for csv_name in ["experiment_matrix.csv", "pilot_local.csv"]:
+    for csv_name in ["experiment_matrix.csv", "pilot_local.csv", "benchmark_matrix.csv"]:
         path = repo_root / "configs" / csv_name
         if not path.exists():
             continue
@@ -1644,6 +1644,89 @@ def test_every_matrix_row_is_reachable_by_exactly_one_stage():
                 "应当恰好 1 个。0 个 = --stage all 会静默跳过它；"
                 ">1 个 = 会被重复跑"
             )
+
+
+def test_benchmark_matrix_pins_the_configs_that_change_conclusions():
+    """★ 基准矩阵里那些"不写就默认成错配置"的开关，必须显式出现。
+
+    这条测试来自生成基准矩阵时踩到的一个坑：``bench_fedosp_r`` 是从
+    ``m_fedosp`` 派生的，而那行的 ``extra_args`` 是**空的**。于是生成出来的
+    配置会跑成**原始 FedOSP**（FSR 开启 + sqrt 参数聚合）—— 恰恰是已被实验
+    证伪的有害配置（sqrt 聚合使四项校准指标一致变差）。
+
+    它不会报错，只会安静地产出一张名字叫 FedOSP-R、内容却是 FedOSP 的表。
+
+    另外两件事一起钉住：
+    * A 层必须是 10 个 seed，否则 CI 半宽 > 0.02，排除不了文献声称的效应量，
+      整篇论文的主论点就塌了；
+    * seed 必须 ≥3。seed 0–2 参与过组件筛选，用它们做确认等于自证。
+    """
+    import csv
+
+    path = Path(__file__).resolve().parents[1] / "configs" / "benchmark_matrix.csv"
+    rows = {r["exp_id"]: r for r in csv.DictReader(open(path, encoding="utf-8-sig"))}
+
+    r = rows["bench_fedosp_r"]
+    assert "--no-fsr" in r["extra_args"] and "--param-weight sample" in r["extra_args"], (
+        f"bench_fedosp_r 的 extra_args={r['extra_args']!r} 缺少开关；"
+        "不写就是 FSR+sqrt，那是已证伪的配置，跑出来的表名实不符"
+    )
+
+    for exp_id, row in rows.items():
+        seeds = [int(s) for s in row["seeds"].split(";")]
+        assert min(seeds) >= 3, (
+            f"{exp_id} 用了 seed {min(seeds)}；seed 0–2 参与过组件筛选，"
+            "拿它们做确认实验会引入选择偏差"
+        )
+        if row["priority"] == "A":
+            assert len(seeds) >= 10, (
+                f"{exp_id} 在 A 层却只有 {len(seeds)} 个 seed。"
+                "A 层的存在理由就是把 CI 半宽压到 0.02 以下（σ_d=0.0272 时需 n≥10），"
+                "否则排除不了文献声称的 0.01~0.02 效应"
+            )
+
+
+def test_multiclass_brier_is_sensitive_to_where_probability_mass_lands():
+    """★ Brier 必须能区分"错得远"和"错得近"，这正是它和 ECE 互补的理由。
+
+    两个模型可以有完全相同的置信度和准确率（因而 ECE 相同），
+    但把概率质量放在不同的等级上。DR 分级是有序任务，质量落在哪一级有临床含义。
+    """
+    from fedosp.metrics import multiclass_brier
+
+    y = [2]
+    perfect = np.array([[0, 0, 1.0, 0, 0]])
+    assert abs(multiclass_brier(y, perfect)) < 1e-9
+
+    # 完全错、且错到最远的一端 → 取到上界 2
+    worst = np.array([[1.0, 0, 0, 0, 0]])
+    assert abs(multiclass_brier(y, worst) - 2.0) < 1e-9
+
+    # 同样是 argmax 错误，错到邻级应当优于错到远端
+    near = np.array([[0, 0.4, 0.3, 0.2, 0.1]])
+    far = np.array([[0.4, 0.3, 0.2, 0.1, 0.0]])
+    assert multiclass_brier(y, near) < multiclass_brier(y, far)
+
+
+def test_param_weight_flag_is_rejected_on_strategies_that_ignore_it():
+    """★ ``--param-weight`` 只有 fedosp 读；写在别的策略上必须报错而不是被吞掉。
+
+    参数聚合口径是本项目里被实测证实能改变结论的因素。一个被静默忽略的
+    ``--param-weight`` 会让整张基准表的聚合口径不可比，却不给任何提示。
+    """
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [sys.executable, "-m", "fedosp.run_fed", "--strategy", "fedavg",
+         "--param-weight", "sample", "--rounds", "1"],
+        cwd=root, capture_output=True, text=True, timeout=300,
+    )
+    assert proc.returncode != 0, "非 fedosp 策略上给 --param-weight 居然被接受了"
+    combined = proc.stdout + proc.stderr
+    assert "只对 --strategy fedosp 生效" in combined, (
+        f"报错了但没说清原因，用户会以为是别的问题：\n{combined[-600:]}"
+    )
 
 
 def test_result_tier_blocks_pilot_from_being_cited_as_main():

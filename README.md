@@ -14,6 +14,29 @@
 
 ---
 
+## ⚠️ 项目状态（2026-09-27）：方法主张已被自身实验推翻
+
+**这个仓库的名字来自最初的方法假设，但那些假设已经不成立了。**
+真实五中心实验跑完之后：
+
+| 比较 | 效应 | 95% CI | 判定 |
+|---|---:|---|---|
+| FedOSP-R − FedAvg | +0.0290 | [+0.0096, +0.0485] | 真实 |
+| FedOSP-R − **FedProto（2022）** | **+0.00045** | **[−0.0101, +0.0110]** | **无增量** |
+
+全部收益由一个已发表四年的基线解释；C1/C2/C3 四个组件无一有可测贡献，
+sqrt 参数聚合被证实**有害**。详见
+[`reports/FedOSP_实验台账_终版_2026-09-27.md`](reports/FedOSP_实验台账_终版_2026-09-27.md)。
+
+**项目现在的方向是基准 / 阴性结果论文**，核心结论是：
+主端点的 seed 间配对噪声 **σ_d = 0.0272**，大于该领域普遍报告的方法增益（0.010–0.020）。
+骨架见 [`reports/论文骨架_基准与阴性结果.md`](reports/论文骨架_基准与阴性结果.md)。
+
+> 下文关于"两个创新点""方法结构"的描述保留原样，因为复现这些**阴性结论**
+> 需要它们。读的时候请把它们理解为**被测对象**，不是本项目的主张。
+
+---
+
 ## 最快上手：四条命令
 
 **这四条按顺序跑，前三条都不需要真实数据、不需要 GPU。**
@@ -244,6 +267,68 @@ bash scripts/run_all.sh --dry-run
 
 **加新实验不用改代码**：在 `configs/experiment_matrix.csv` 里加一行，
 把开关写进 `extra_args` 列即可，调度器会自动展开成命令。
+
+---
+
+## 基准横评：`configs/benchmark_matrix.csv`
+
+这是**当前论文方向**要跑的东西，和上面的 `experiment_matrix.csv` 是两套：
+后者服务于已被推翻的方法主张，前者服务于基准论文。
+
+### 为什么单独一个矩阵
+
+三点差别，每一点都影响结论能不能成立：
+
+1. **seed 取 3–12**。seed 0–2 参与过组件筛选，用它们做确认等于自证。
+   3–12 是干净区间，可与已有的 10 对确认实验严格配对。
+2. **分层样本量**。σ_d = 0.0272 时 CI 半宽 = $t_{0.975,n-1}\cdot\sigma_d/\sqrt{n}$：
+   n=5 给 ±0.034，**排除不了**文献声称的 0.010–0.020；n=10 给 ±0.0195，能排除 0.02。
+   所以主对比臂必须 n≥10。
+3. **A 层成员事先指定**。看完 n=5 结果再决定谁加到 n=10，就是按噪声选择——
+   正是这篇论文在批评的做法。
+
+### 分层与成本
+
+| 层 | 内容 | 每臂 seed | run | GPU·h | 8 槽墙钟 |
+|---|---|---:|---:|---:|---:|
+| **A** | fedavg / fedproto / fedosp_r / qfedavg / moon / feddg | **10** | 60 | 77.4 | 9.7 h |
+| B | fedprox / fedbn / scaffold / fedper / feduaa / fedala / ditto | 5 | 35 | 46.1 | 5.8 h |
+| C | local / pooled / full / vpt（参考点，不参与方法比较） | 5 | 20 | 25.5 | 3.2 h |
+| D | `diag_delta`：LoRA 聚合偏差 δ 的逐轮轨迹 | 3 | 3 | 3.3 | 0.4 h |
+
+A 层三个新增成员的入选理由（写在 CSV 的 note 列里，可追溯）：
+q-FedAvg 是唯一针对 worst-client 端点的方法；MOON 是引用最高的表示层 FL 方法；
+FedDG-ELCFS 是唯一的域泛化方法，直接对应未见中心端点。
+
+### 怎么跑
+
+```bash
+# 分层跑，先拿 A 层的紧 CI 再决定要不要继续
+python scripts/scheduler.py --matrix configs/benchmark_matrix.csv \
+       --stage bench --priority A --gpus 0,1,2,3 --jobs-per-gpu 2
+
+# 出论文主表（配对差 + CI + 本行能排除多大的效应）
+python scripts/benchmark_table.py --metric messidor_qwk --markdown
+python scripts/benchmark_table.py --metric worst_qwk        # 换端点
+python scripts/benchmark_table.py --ref bench_fedproto      # 换参照臂
+```
+
+`benchmark_table.py` 一律按 **seed 配对**比较。不同方法在同一个 seed 上会一起
+偏高或偏低（共享数据划分与初始化），独立两样本检验会把这部分共同波动算进误差，
+白白损失功效。它还会输出"本行能排除多大的差异"——没有这一列，
+零结果会被误读成功效不足。
+
+### 一个必须知道的坑
+
+`bench_fedosp_r` 的 `extra_args` 里 `--no-fsr --param-weight sample` **必须显式写**。
+不写就是默认的 FSR 开启 + sqrt 聚合，那是已被实验证伪的有害配置
+（sqrt 把 IDRiD 权重放大 5.7 倍，隐含重症先验从 26.3% 推到 32.3%，
+四项校准指标一致变差）。它不会报错，只会安静地产出一张名字叫
+FedOSP-R、内容却是 FedOSP 的表。
+
+`tests/test_pipeline.py::test_benchmark_matrix_pins_the_configs_that_change_conclusions`
+已经把这条钉住了。同理，在非 fedosp 策略上给 `--param-weight` 现在会**直接报错**
+而不是被静默忽略。
 
 ---
 

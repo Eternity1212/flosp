@@ -685,6 +685,33 @@ def apply_config_file(parser: argparse.ArgumentParser, args, argv: Optional[List
     return args
 
 
+def check_flag_applicability(args, argv: Optional[List[str]] = None) -> None:
+    """拦下那些"给了也不生效"的参数组合。
+
+    ``--param-weight`` / ``--proto-agg`` 只有 ``--strategy fedosp`` 会读
+    （见 :func:`run` 里构造 ``strategy_kwargs`` 的地方），其余策略的参数聚合
+    固定为 sample。写在别的策略上不会报错，只会被静默丢掉。
+
+    而参数聚合口径恰恰是本项目里**被实测证实能改变结论**的因素：sqrt 聚合
+    把 IDRiD 的权重放大 5.7 倍，使隐含重症先验从 26.3% 推到 32.3%，
+    四项校准指标一致变差。一张聚合口径不一致的基准表看上去完全正常，
+    却没有可比性 —— 所以这里选择直接报错，而不是打个 warning 了事。
+
+    在 ``main`` 里、加载数据之前调用，免得跑了几分钟预处理才发现参数写错。
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if args.strategy == "fedosp":
+        return
+    for flag, attr in (("--param-weight", "param_weight"), ("--proto-agg", "proto_agg")):
+        if flag in argv:
+            raise SystemExit(
+                f"{flag}={getattr(args, attr)} 只对 --strategy fedosp 生效，"
+                f"当前 --strategy {args.strategy} 会忽略它。\n"
+                f"非 fedosp 策略的参数聚合固定为 sample（见 strategies.py 的 "
+                f"param_weight_mode）。请删掉这个参数，或改用 --strategy fedosp。"
+            )
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -694,6 +721,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         datefmt="%H:%M:%S",
     )
     args = apply_config_file(parser, args, argv)
+    check_flag_applicability(args, argv)
     if args.dry_run:
         # 用微型 ViT + 极小配置，几十秒内跑完；显式传的 --rounds 仍然生效
         args.backbone = "debug_vit"

@@ -1,0 +1,19 @@
+exp_id,stage,entrypoint,strategy,backbone,img_size,clients,rounds,epochs,label_budget,participation,mode,seeds,extra_args,est_gpu_h,priority,note
+bench_fedavg,bench,fedosp.run_fed,fedavg,,224,,100,,,,,3;4;5;6;7;8;9;10;11;12,--no-fsr --no-shallow-proto --no-deep-proto,11.0,A,参照臂。所有配对差以它为基准。seed 3–12 已有 10 对确认实验，若 runs/ 里已存在会自动跳过
+bench_fedproto,bench,fedosp.run_fed,fedproto,,224,,100,,,,,3;4;5;6;7;8;9;10;11;12,--no-fsr --proto-agg sample,11.7,A,"★ 最近先验：与 FedOSP-R 差 +0.00045 [-0.0101,+0.0110]，它解释了全部外测收益"
+bench_fedosp_r,bench,fedosp.run_fed,fedosp,,224,,100,,,,,3;4;5;6;7;8;9;10;11;12,--no-fsr --param-weight sample,12.0,A,"FedOSP-R。相对 FedAvg +0.0290 [+0.0096,+0.0485]。extra_args 两个开关必须显式写，否则默认是已证伪的 FSR+sqrt 配置"
+bench_qfedavg,bench,fedosp.run_fed,qfedavg,,224,,100,,,,,3;4;5;6;7;8;9;10;11;12,--no-fsr --no-shallow-proto --no-deep-proto --q 1.0,11.7,A,A 层理由（事先指定）：唯一针对 worst-client 的方法，而 worst-client 是两个预注册端点之一
+bench_moon,bench,fedosp.run_fed,moon,,224,,100,,,,,3;4;5;6;7;8;9;10;11;12,--no-fsr --no-shallow-proto --no-deep-proto --moon-mu 1.0,18.7,A,A 层理由（事先指定）：引用最高的表示层 FL 方法，原型类方法的直接对手
+bench_feddg,bench,fedosp.run_fed,feddg,,224,,100,,,,,3;4;5;6;7;8;9;10;11;12,--no-shallow-proto --no-deep-proto --feddg-per-client 10,12.3,A,A 层理由（事先指定）：唯一的域泛化方法，直接对应未见中心端点
+bench_fedprox,bench,fedosp.run_fed,fedprox,,224,,100,,,,,3;4;5;6;7,--no-fsr --no-shallow-proto --no-deep-proto --fedprox-mu 0.01,5.7,B,近端项抑制 client drift
+bench_fedbn,bench,fedosp.run_fed,fedbn,,224,,100,,,,,3;4;5;6;7,--no-fsr --no-shallow-proto --no-deep-proto,5.5,B,LayerNorm 留本地
+bench_scaffold,bench,fedosp.run_fed,scaffold,,224,,100,,,,,3;4;5;6;7,--no-fsr --no-shallow-proto --no-deep-proto,6.0,B,control variate；通信量约 FedAvg 两倍，须如实报进通信表
+bench_fedper,bench,fedosp.run_fed,fedper,,224,,100,,,,,3;4;5;6;7,--no-fsr --no-shallow-proto --no-deep-proto,5.5,B,分类头留本地
+bench_feduaa,bench,fedosp.run_fed,feduaa,,224,,100,,,,,3;4;5;6;7,--no-fsr --no-shallow-proto --no-deep-proto,5.8,B,FedUAA 复现版；须声明是统一骨干下的复现而非原文数字
+bench_fedala,bench,fedosp.run_fed,fedala,,224,,100,,,,,3;4;5;6;7,--no-fsr --no-shallow-proto --no-deep-proto,6.3,B,FedALA（AAAI23）下发侧元素级插值
+bench_ditto,bench,fedosp.run_fed,ditto,,224,,100,,,,,3;4;5;6;7,--no-fsr --no-shallow-proto --no-deep-proto --ditto-lambda 0.1,11.3,B,Ditto（ICML21）个性化基线；本地步数 2x，B 层里最贵的
+bench_local,bench,fedosp.run_central,,,224,eyepacs aptos ddr idrid,,20,,,local,3;4;5;6;7,,2.5,C,参考点：各中心各训各的，联邦价值的下界
+bench_pooled,bench,fedosp.run_central,,,224,eyepacs aptos ddr idrid,,20,,,pooled,3;4;5;6;7,,4.0,C,参考点：汇总训练的 oracle 上界（现实中不合法）
+bench_full,bench,fedosp.run_fed,fedavg,,224,,100,,,,,3;4;5;6;7,--full-finetune --no-fsr --no-shallow-proto --no-deep-proto --lr 1e-5,13.3,C,参考点：全量微调，上传 1.2GB/轮，通信开销上界
+bench_vpt,bench,fedosp.run_fed,fedavg,,224,,100,,,,,3;4;5;6;7,--num-prompts 10 --no-fsr --no-shallow-proto --no-deep-proto,5.7,C,参考点：visual prompt tuning，另一种 PEFT
+diag_delta,bench,fedosp.run_fed,fedavg,,224,,100,,,,,13;14;15,--no-fsr --no-shallow-proto --no-deep-proto --log-lora-delta,3.3,D,LoRA 因子平均误差 δ 的逐轮轨迹。seed13 已测得暂态（R1 6.24% → 末48轮均值 0.063%），补两个 seed 才能写成稳定的适用边界。⚠️ 依赖 --log-lora-delta，该实现目前只在 GPU 机器本地，尚未推回本仓库
