@@ -377,6 +377,24 @@ def run(args) -> Dict:
         if strategy.history:
             row.update({k: v for k, v in strategy.history[-1].items()
                         if k not in ("round",)})
+
+        # ---- 逐轮外测：把"选择方差"和"训练方差"拆开 ----
+        # 模型选择是在 ~100 轮上对验证 macro_qwk 取 argmax，而实测最佳轮散布在
+        # 37/53/60/77/99（对平台期均匀分布的 KS 检验 p=0.982）。验证集不大
+        # （IDRiD 只有 103 张），每轮验证噪声约 0.02 量级 —— 在平坦曲线上对
+        # 100 个候选取 argmax 是典型的 winner's curse。
+        #
+        # 于是 seed 间 SD=0.033 里，有多少其实来自"选哪一轮"而不是"训得怎样"？
+        # 这个问题可以在**单次 run 内部**回答：把外测指标在平台期每一轮都算一遍，
+        # 它们的散布就是选择注入的方差，不需要任何跨 seed 重复。
+        #
+        # 代价极小：Messidor-2 只有 1,744 张，H100 上一次前向约 8.4 秒，
+        # 每 5 轮测一次总共约 2.8 分钟，相对 1.1 小时的训练是 4% 量级。
+        if args.eval_external_every and external_loader is not None \
+                and rnd % args.eval_external_every == 0:
+            ext_m = evaluate_external(clients, state, external_loader)
+            row.update({f"ext_{k}": v for k, v in ext_m.items()})
+
         history.append(row)
         LOGGER.info(
             "round %3d | macro %.4f worst %.4f | per-client %s | 累计上传 %.1f MB",
@@ -628,6 +646,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tau2-override", type=float, default=None,
                    help="固定 between-client 方差 tau^2 而不用 DerSimonian-Laird 估计，"
                         "用于 A6 的 tau^2 扫描（验证退化行为）")
+    p.add_argument("--eval-external-every", type=int, default=0, metavar="N",
+                   help="每 N 轮在未见中心上评估一次，结果以 ext_* 前缀写进 history。"
+                        "0=关闭（默认，只在最后评估一次）。"
+                        "用于把 seed 方差拆成『选择方差』与『训练方差』："
+                        "平台期各轮外测指标的散布 = 选择注入的方差。"
+                        "开销约为训练时长的 4%%，建议取 5")
     p.add_argument("--param-weight", type=str, default="sqrt",
                    choices=["sqrt", "sample", "equal"])
     p.add_argument("--steps-rule", type=str, default="sqrt",

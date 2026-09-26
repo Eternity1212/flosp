@@ -1686,6 +1686,41 @@ def test_benchmark_matrix_pins_the_configs_that_change_conclusions():
             )
 
 
+def test_variance_window_does_not_depend_on_validation_noise():
+    """★ 统计窗口必须与验证曲线的噪声无关，否则 run 内方差会被系统性低估。
+
+    这条测试是三次失败的启发式逼出来的。作者先后写过"原始曲线取峰值×比例"、
+    "均值平滑"、"中位数平滑 + 峰值−zσ"三版自动找平台的逻辑，每一版都在
+    合成数据上被找出系统性偏差，且**全都朝同一个方向**——窗口被截短、
+    run 内方差被低估，从而把结论错误推向"训练主导"，
+    也就是把一个可能成立的方法贡献误判成阴性。
+
+    现在改用固定窗口。这条测试钉住的正是"固定"这个性质：
+    同一条平台曲线，不管叠多大的噪声、有没有尖峰，窗口必须完全一样。
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from variance_decomposition import trend_pvalue, window_start
+
+    rng = np.random.default_rng(0)
+    base = list(np.linspace(0, 0.7, 35)) + [0.70] * 65
+    spiky = list(base)
+    spiky[-3] = 0.95
+    noisy = list(np.concatenate([np.linspace(0, 0.7, 35),
+                                 0.7 + rng.normal(0, 0.02, 65)]))
+
+    starts = {window_start(len(c)) for c in (base, spiky, noisy)}
+    assert len(starts) == 1, f"窗口随噪声变了：{starts}。固定窗口不该有这种依赖"
+    i0 = starts.pop()
+    assert i0 >= 35, f"窗口起点 {i0} 落在上升段里，会把未收敛的一段算成选择方差"
+    assert len(base) - i0 >= 5, "窗口内采样点少于 5 个，方差估计没有意义"
+
+    # 未收敛的曲线必须被趋势检查抓出来，而不是被自动判定悄悄回避
+    rising = list(np.linspace(0.5, 0.7, 60))
+    flat = list(0.7 + rng.normal(0, 0.01, 60))
+    assert trend_pvalue(list(range(60)), rising) < 0.05, "持续上升却没报出趋势"
+    assert trend_pvalue(list(range(60)), flat) > 0.05, "平坦曲线被误报为有趋势"
+
+
 def test_multiclass_brier_is_sensitive_to_where_probability_mass_lands():
     """★ Brier 必须能区分"错得远"和"错得近"，这正是它和 ECE 互补的理由。
 
