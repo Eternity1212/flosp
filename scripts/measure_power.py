@@ -48,11 +48,18 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-#: 双侧 α=0.05 与 power=80% 对应的正态分位数
-Z_ALPHA, Z_BETA = 1.959964, 0.841621
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# 这里曾有一对模块级常量 ``Z_ALPHA, Z_BETA = 1.959964, 0.841621``（和 = 2.8016，
+# 正是正态近似样本量公式的系数）。commit 8625569 把本脚本改成蒙特卡洛之后它们
+# 就没有调用点了，但**留着比删掉危险**：两个现成的 z 分位数摆在模块顶端，是在
+# 邀请下一个人写回 (Z_ALPHA+Z_BETA)**2 * sd**2 / delta**2。本项目为这个近似
+# 已经栽了三次（见 fedosp.stats.pairs_needed 的 docstring），所以直接删掉。
+# 要事前算样本量请用 fedosp.stats.pairs_needed（精确非中心 t）。
 
 #: 设计文档 §2.5 给出的 C1 诚实效应量区间，外加一个更保守的下界
 TARGET_DELTAS = (0.015, 0.02, 0.03, 0.04)
@@ -144,14 +151,25 @@ def power_at(n: int, sd_diff: float, delta: float, trials: int = 20000,
 
 
 def required_seeds(sd_diff: float, delta: float, target: float = 0.80) -> int:
-    """达到 ``target`` 功效所需的 seed 数（用模拟逐个试，不用解析公式）。"""
+    """达到 ``target`` 功效所需的 seed 数。直接调包里的精确非中心 t 实现。
+
+    **这里原本是"沿 T_CRIT 的键逐个试蒙特卡洛"，有两个静默失效**：
+
+    1. ``T_CRIT`` 的键不连续（…15, 17, 19, 24, 29），所以候选 n 只有
+       2–16、18、20、25、30 这些值，真值落在空档里就被抬到下一个候选；
+    2. 更糟的是走完候选还没够时 ``return 30``——一个**当作"很多"的哨兵值**，
+       打印出来与真实答案长得一模一样。σ_d=0.0386（IDRiD worst-client 的实测
+       SD，正是本脚本的主用例）、Δ=0.015 时它打印 30，而精确值是 **54**。
+       也就是在本脚本最该给出警告的那一格，它给了个偏低 44% 的数字且毫无提示。
+
+    另外 20000 次模拟在 power≈0.8 附近的 SE 约 0.3%，边界格会随机差 1
+    （σ_d=0.0272、Δ=0.020 时模拟给 18，精确值 17）。样本量不该带随机性。
+    """
+    from fedosp.stats import pairs_needed
+
     if sd_diff <= 0 or delta <= 0:
         return 2
-    for n in sorted(k + 1 for k in T_CRIT):
-        p = power_at(n, sd_diff, delta)
-        if not math.isnan(p) and p >= target:
-            return n
-    return 30  # 超出表范围，直接给个"很多"的信号
+    return pairs_needed(delta, sd_diff, power=target)
 
 
 def mean_sd(xs: Sequence[float]) -> Tuple[float, float]:

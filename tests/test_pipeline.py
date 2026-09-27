@@ -1760,7 +1760,7 @@ def test_benchmark_matrix_does_not_duplicate_the_frozen_external_panel():
                   "--moon-mu 1.0", "--moon-tau 0.5", "NEXT_PHASE_PREREGISTRATION"):
         assert token in notes, (
             f"注释行里没写 {token!r}。合并对方结果时要按 exp_id + 超参逐项核对，"
-            "记不全就只能靠记忆，而本项目 12 个已知缺陷里有 8 个是静默失败"
+            "记不全就只能靠记忆，而本项目 15 个已知缺陷里有 11 个是静默失败"
         )
 
 
@@ -1873,24 +1873,29 @@ def test_variance_window_does_not_depend_on_validation_noise():
 
 
 def test_sample_size_uses_exact_noncentral_t_not_the_normal_approximation():
-    """★ 样本量必须用非中心 t 算；正态近似系统性低估，本项目已经栽过两次。
+    """★ 样本量必须用非中心 t 算；正态近似系统性低估，本项目已经栽过三次。
 
     常见解析式 ``n = (z_.975 + z_.80)^2 * sd^2 / delta^2``（系数 7.849）有两处
-    偏差：临界值其实是 ``t_{n-1}`` 而不是 ``z``，且 ``s`` 是估计量。
-    两处都朝**低估**方向走 —— 也就是说它会告诉你"跑这么多 seed 就够了"，
-    而实际功效达不到 0.8。
+    偏差：临界值其实是 ``t_{n-1}`` 而不是 ``z``，且 ``s`` 是估计量（统计量服从
+    非中心 t 而不是正态）。两处都朝**低估**方向走 —— 也就是说它会告诉你
+    "跑这么多 seed 就够了"，而实际功效达不到 0.8。
 
-    第一次栽在 B0 闸门：commit ``8625569`` 的 message 写得很明白
-    "n=3 时临界值是 t₂=4.303 而非 z=1.96，差 2.2 倍、平方后 4.8 倍样本量"，
-    当时把 ``measure_power.py`` 改成了蒙特卡洛。
-    第二次栽在方差分解脚本和台账 §8.1 的样本量表 —— 两处都还留着
-    ``2.8016**2``，也就是同一个被否掉的近似。所以这条测试不测"结果大概对"，
-    它直接测"比近似值大"，把回退这个近似的改动当场拦住。
+    三次都栽在同一个地方：
+
+    1. B0 闸门。commit ``8625569`` 的 message 写得很明白"n=3 时临界值是
+       t₂=4.303 而非 z=1.96，差 2.2 倍、平方后 4.8 倍样本量"，
+       当时把 ``measure_power.py`` 改成了蒙特卡洛 ——
+       **但教训只进了 commit message，没进代码**；
+    2. 方差分解脚本和台账 §8.1 的样本量表，两处都还留着 ``2.8016**2``；
+    3. 第 2 条修好之后，``scripts/benchmark_table.py`` 里同一行近似**没跟着改**，
+       于是台账写 61、脚本打印 59。
+
+    所以这条测试不测"结果大概对"，它直接测"比近似值大"，把回退当场拦住；
+    第 3 条那种"修一处漏一处"由下一条源码级守卫负责。
     """
     import math
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-    from variance_decomposition import pairs_needed
+    from fedosp.stats import pairs_needed
 
     # 台账 §8.1 复算值（sigma_d = 0.0272，双侧 0.05，功效 0.8）
     assert pairs_needed(0.010, 0.0272) == 61
@@ -1911,6 +1916,108 @@ def test_sample_size_uses_exact_noncentral_t_not_the_normal_approximation():
     ns = [pairs_needed(d, 0.0272) for d in (0.005, 0.010, 0.020, 0.050)]
     assert ns == sorted(ns, reverse=True), f"样本量随效应量不单调：{ns}"
     assert pairs_needed(0.0, 0.0272) >= 2000 and pairs_needed(0.01, 0.0) >= 2000
+
+
+def test_no_script_recomputes_sample_size_with_the_normal_approximation():
+    """★ 源码级守卫：正态近似的魔数不得出现在 scripts/ 与 fedosp/ 的**可执行代码**里。
+
+    这条测试针对的不是"算错了"，而是"**只修了一半**"——台账 §11 记了 15 个实现
+    缺陷、11 个是静默失败，而这是其中最会重演的一种。
+
+    2026-09-27 的实际情形：``pairs_needed`` 已经改成精确非中心 t、台账 §8.1 的表
+    也已经改成 61/28/17/9，但 ``scripts/benchmark_table.py`` 里那行
+    ``math.ceil((2.8016 ** 2) * pooled_sd ** 2 / delta ** 2)`` 没跟着改 ——
+    而它正是论文表 4"检出指定效应所需配对数"（骨架列为本文核心交付物）的生成者。
+    于是文档说 61、脚本打印 59，两个数同时存在于仓库里，谁也不报错。
+    （台账 §11 另记了同期查出的第三处：``measure_power.required_seeds`` 把
+    "超出候选表"的哨兵值 30 当答案打印，σ_d=0.0386、Δ=0.015 时真值其实是 54。）
+
+    上一条测试**抓不到这种情况**：被漏掉的那份近似压根没走 ``pairs_needed``，
+    断言它的返回值再多也没用。守卫必须落在源码层。
+
+    **怎么区分"真在算"和"docstring 里正当地提到它"**：只扫 AST 里的**数值字面量**。
+    注释根本不进 AST；docstring 是 ``str`` 常量，不是数值常量。于是
+    ``fedosp.stats.pairs_needed`` 的 docstring 里那句"系数 7.849"、台账引用、
+    以及上一条测试里用作对照的 ``2.8016 ** 2``（在 ``tests/`` 下，本就不在扫描
+    范围内）全都**自然豁免**，不需要任何白名单——白名单本身就是下一个会被忘记
+    同步的东西。
+
+    禁的是三个只在这条公式里出现的数，不是所有 z 分位数：
+
+    * ``2.8016`` = z_.975+z_.80，以及它的平方 ``7.849``；
+    * ``0.8416`` = z_.80（只有算功效才会用到它。而 ``1.96`` 在大样本 CI 里是
+      正当用法，``benchmark_table.t_crit`` 和 ``fedosp.stats.delong_test``
+      都在正当地用它，所以不能禁）；
+    * ``字面量 + 字面量`` 且和 ≈ 2.8016，用来堵 ``1.96 + 0.8416`` 这种拆开写法。
+
+    容差留得比最近的合法常量小一个量级以上（最近的是 ``metrics.py`` 的 0.8379
+    与 t_.975,4=2.776），所以不会误伤。
+
+    **已知盲区**，如实记下而不是假装守严了：用 ``norm.ppf(0.975)`` 现算分位数
+    可以绕过数值扫描。所以另加一条运行期断言——三个用得上样本量的脚本里，
+    ``pairs_needed`` 必须**是同一个对象**（``measure_power`` 是函数体内 import，
+    改核对它的返回值），即全仓库只有一条算样本量的代码路径。
+    """
+    import ast
+    import importlib
+
+    root = Path(__file__).resolve().parents[1]
+    #: {说明: (值, 容差)}
+    forbidden = {
+        "z_.975+z_.80": (2.8016, 5e-3),
+        "(z_.975+z_.80)^2": (7.849, 5e-3),
+        "z_.80": (0.8416, 5e-4),
+    }
+
+    def matched(value: float) -> str:
+        for name, (target, tol) in forbidden.items():
+            if abs(value - target) <= tol:
+                return name
+        return ""
+
+    hits = []
+    for py in sorted([*(root / "scripts").rglob("*.py"), *(root / "fedosp").rglob("*.py")]):
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        for node in ast.walk(tree):
+            # 规则 A：单个数值字面量
+            if (isinstance(node, ast.Constant) and not isinstance(node.value, bool)
+                    and isinstance(node.value, (int, float))):
+                name = matched(float(node.value))
+                if name:
+                    hits.append(f"{py.relative_to(root)}:{node.lineno} 字面量 "
+                                f"{node.value} ≈ {name}")
+            # 规则 B：字面量 + 字面量，和 ≈ 2.8016（拆开写的同一个东西）
+            if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)
+                    and isinstance(node.left, ast.Constant)
+                    and isinstance(node.right, ast.Constant)
+                    and isinstance(node.left.value, (int, float))
+                    and isinstance(node.right.value, (int, float))
+                    and abs(float(node.left.value) + float(node.right.value) - 2.8016) <= 5e-3):
+                hits.append(f"{py.relative_to(root)}:{node.lineno} "
+                            f"{node.left.value}+{node.right.value} ≈ z_.975+z_.80")
+
+    assert not hits, (
+        "可执行代码里出现了正态近似样本量公式的系数：\n  "
+        + "\n  ".join(hits)
+        + "\n样本量一律走 fedosp.stats.pairs_needed（精确非中心 t）。"
+        "在 σ_d≈0.027 上近似值每一格都少 2 个配对（Δ=0.030 那格少 29%）。"
+    )
+
+    # 盲区补偿：三个脚本必须共用同一个实现，不许各自持有一份
+    sys.path.insert(0, str(root / "scripts"))
+    from fedosp.stats import pairs_needed
+    for mod_name in ("benchmark_table", "variance_decomposition", "measure_power"):
+        mod = importlib.import_module(mod_name)
+        fn = getattr(mod, "pairs_needed", None)
+        if fn is None:  # measure_power 是函数体内 import，取它的间接调用结果核对
+            assert mod.required_seeds(0.0272, 0.010) == pairs_needed(0.010, 0.0272), (
+                f"{mod_name} 的样本量结果与 fedosp.stats.pairs_needed 不一致"
+            )
+            continue
+        assert fn is pairs_needed, (
+            f"{mod_name}.pairs_needed 不是 fedosp.stats.pairs_needed 本身，"
+            "说明脚本又自己抄了一份实现 —— 这正是 2026-09-27 那次只修一半的成因"
+        )
 
 
 def test_multiclass_brier_is_sensitive_to_where_probability_mass_lands():

@@ -45,13 +45,18 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+# 样本量的唯一实现在包里。这个 import 同时也是一条约束：脚本不许自己再写一份
+# 近似公式——曾经写过，而且只修了一半（见 pairs_needed 的 docstring）。
+from fedosp.stats import pairs_needed  # noqa: E402
 
 
 def window_start(n_points: int, frac: float = 0.5, min_pts: int = 5) -> int:
@@ -73,7 +78,7 @@ def window_start(n_points: int, frac: float = 0.5, min_pts: int = 5) -> int:
     成立的方法贡献误判成阴性。
 
     带三个可调参数、需要反复打补丁的启发式，正是这个项目反复栽跟头的东西
-    （台账 §11 记了 12 个实现缺陷，其中 8 个是静默失败）。所以改用固定窗口：
+    （台账 §11 记了 15 个实现缺陷，其中 11 个是静默失败）。所以改用固定窗口：
     没有可调阈值、结果可直接复算、窗口写进论文即可审计。
     收敛速度的差异改由 :func:`trend_pvalue` **显式检查并报告**，
     而不是藏在一个自动判定里。
@@ -92,54 +97,6 @@ def trend_pvalue(x: List[int], y: List[float]) -> float:
         return float("nan")
     from scipy import stats
     return float(stats.spearmanr(x, y).pvalue)
-
-
-def pairs_needed(delta: float, sd: float, power: float = 0.80,
-                 alpha: float = 0.05, n_max: int = 2000) -> int:
-    """检出配对差 ``delta`` 所需的配对数（双侧 ``alpha``，功效 ``power``）。
-
-    **必须用精确的非中心 t，不能用正态近似。** 常见的解析式
-    :math:`n=(z_{1-\\alpha/2}+z_{1-\\beta})^2\\sigma_d^2/\\Delta^2`（系数 7.849）
-    有两处偏差：临界值是 :math:`t_{n-1}` 而不是 :math:`z`，且 :math:`s` 是估计量。
-    两处都朝**低估**方向走。
-
-    这个坑本项目踩过两次。第一次是 B0 闸门的功效表（commit ``8625569``
-    已把 ``measure_power.py`` 改成蒙特卡洛，并在 commit message 里写下
-    "n=3 时临界值是 t₂=4.303 而非 z=1.96，差 2.2 倍、平方后 4.8 倍样本量"）；
-    第二次是本函数的前身和台账 §8.1 的样本量表，都还留着 ``2.8016**2``。
-
-    在 :math:`\\sigma_d=0.0272` 上，两者的差恰好是**每一格都少 2 个配对**：
-
-    ====== =========== ===========
-    Δ       z 近似       精确 t
-    ====== =========== ===========
-    0.010     59          **61**
-    0.020     15          **17**
-    0.030      7           **9**
-    ====== =========== ===========
-
-    绝对量级不变，但小 n 时相对误差最大（0.030 那一格差 29%）。
-
-    Returns:
-        所需配对数；``delta`` 非正或 ``sd`` 非正时返回 ``n_max``。
-    """
-    import warnings
-
-    from scipy import stats
-
-    if delta <= 0 or sd <= 0:
-        return n_max
-    for n in range(3, n_max + 1):
-        t_crit = stats.t.ppf(1 - alpha / 2, n - 1)
-        ncp = delta * math.sqrt(n) / sd
-        with warnings.catch_warnings():
-            # df=3 时 scipy 的 boost 后端会报 "divide by zero in _nct_sf"，
-            # 但它自己 clip 到 [0,1]，返回值仍然正确（实测 df=3 的功效远小于
-            # 0.8，循环照常往下走）。只是噪声，不是数值错误。
-            warnings.simplefilter("ignore", RuntimeWarning)
-            if stats.nct.sf(t_crit, n - 1, ncp) >= power:
-                return n
-    return n_max
 
 
 def load(runs_dir: Path, prefix: str, metric: str, val_key: str = "macro_qwk"

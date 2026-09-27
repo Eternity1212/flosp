@@ -1,6 +1,7 @@
-"""统计显著性检验（方案第 9 节）。
+"""统计显著性检验与实验设计（方案第 9 节）。
 
-审稿人最常问的一句是"这 0.8 个点的提升是真的还是噪声"。这个模块提供三件套：
+审稿人最常问的两句是"这 0.8 个点的提升是真的还是噪声"和"你们几个 seed 够吗"。
+这个模块把两类问题的工具放在一起：
 
 =========================  ==============================================================
 函数                        用在哪
@@ -9,17 +10,28 @@
 :func:`wilcoxon_clients`   跨 client 配对比 QWK —— 只有 4 个 client，必须用非参数检验
 :func:`holm_bonferroni`    一次比 8 个基线要校正多重比较，否则假阳性率远高于 0.05
 :func:`paired_bootstrap`   通用兜底：任何指标的配对 bootstrap 差值置信区间
+:func:`pairs_needed`       **事前**：检出指定效应需要多少个配对 seed（精确非中心 t）
 =========================  ==============================================================
 
 **为什么 4 个 client 不能用 t 检验**：n=4 时正态性假设站不住，Wilcoxon 符号秩是标准做法。
 但 n=4 时 Wilcoxon 的最小可能 p 值是 0.125（双侧），**永远达不到 0.05**。
 这不是 bug，是样本量的硬限制 —— 所以论文里 client 级比较应该报效应量和方向一致性
 （4/4 个 client 都提升），把 p 值当辅助信息，主检验放在样本级（DeLong / bootstrap）。
+
+**为什么 ** :func:`pairs_needed` **放在这里而不是 metrics.py**：
+``metrics.py`` 装的是"给定一批预测算出一个数"（QWK / ECE / Brier），
+本模块装的是"给定一批数做推断"。样本量是推断的**事前**一侧——它和
+:func:`holm_bonferroni` 共用同一套 α、和配对检验共用同一个 σ_d，
+放在一起才能保证"设计时假定的检验"和"分析时实际做的检验"是同一个。
+放进 ``metrics.py`` 则要么和 QWK 挤在一起语义不搭，要么诱使调用方
+在脚本里各写一份——后者正是本项目已经犯过的错（见函数 docstring）。
 """
 
 from __future__ import annotations
 
 import logging
+import math
+import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -333,11 +345,84 @@ def compare_all(
     return sorted(results, key=lambda r: r.p_corrected or 1.0)
 
 
+# --------------------------------------------------------------------------- #
+# 样本量：事前设计。**全仓库唯一实现，不要在脚本里另写一份。**
+# --------------------------------------------------------------------------- #
+def pairs_needed(delta: float, sd: float, power: float = 0.80,
+                 alpha: float = 0.05, n_max: int = 2000) -> int:
+    """检出配对差 ``delta`` 所需的配对数（双侧 ``alpha``，功效 ``power``）。
+
+    **必须用精确的非中心 t，不能用正态近似。** 常见的解析式
+    :math:`n=(z_{1-\\alpha/2}+z_{1-\\beta})^2\\sigma_d^2/\\Delta^2`（系数 7.849）
+    有两处偏差：临界值是 :math:`t_{n-1}` 而不是 :math:`z`，且 :math:`s` 是估计量
+    （所以检验统计量服从**非中心 t**，不是正态）。两处都朝**低估**方向走 ——
+    也就是说它会告诉你"跑这么多 seed 就够了"，而实际功效达不到 0.8。
+
+    在 :math:`\\sigma_d=0.0272`（Messidor-2 QWK 配对差的实测 SD）上，
+    两者的差恰好是**每一格都少 2 个配对**：
+
+    ====== =========== ===========
+    Δ       z 近似       精确 t
+    ====== =========== ===========
+    0.010     59          **61**
+    0.020     15          **17**
+    0.030      7           **9**
+    ====== =========== ===========
+
+    绝对量级不变，但小 n 时相对误差最大（0.030 那一格差 29%）。
+
+    这个坑本项目踩过三次，每一次都比上一次更难看：
+
+    1. **B0 闸门的功效表**。commit ``8625569`` 把 ``measure_power.py`` 改成了
+       蒙特卡洛，并在 commit message 里写下"n=3 时临界值是 t₂=4.303 而非
+       z=1.96，差 2.2 倍、平方后 4.8 倍样本量"。**教训只进了 commit message，
+       没进代码**——没有任何函数或测试阻止别处再写一遍那个近似。
+    2. **方差分解脚本与台账 §8.1 的样本量表**，两处都还留着 ``2.8016**2``。
+    3. **只修了一半**：第 2 条修好之后，``scripts/benchmark_table.py``（生成
+       论文主表"所需配对数"那一列的脚本）里的同一行近似没跟着改，于是台账写
+       61、脚本打印 59。修一处、漏一处，正是本项目台账 §11 记了 15 次的失效模式。
+
+    所以现在它在这里：**装进包里的唯一实现**，脚本一律 import，
+    并由 ``tests/test_pipeline.py`` 的两条反向测试守住——一条钉死
+    61/17/9 并要求精确值严格大于近似值，另一条扫描 ``scripts/`` 与
+    ``fedosp/`` 的源码，断言那个魔数在可执行代码里一次都不出现。
+
+    Args:
+        delta: 要检出的真实配对差（绝对值，与 ``sd`` 同单位）。
+        sd: 配对差的标准差 :math:`\\sigma_d`。注意**不是**单臂的边际 SD——
+            本项目这两个数分别是 0.0272 与 0.033。样本量按 :math:`\\sigma^2` 走，
+            代错方向相反但一样要命：Δ=0.010 处 61 会变成 88（多算 44%）。
+        power: 目标功效，默认 0.80。
+        alpha: 双侧显著性水平，默认 0.05。
+        n_max: 搜索上界，同时也是"算不出来"时的返回值。
+
+    Returns:
+        所需配对数；``delta`` 非正或 ``sd`` 非正时返回 ``n_max``
+        （而不是一个看起来合理的小数字——静默返回 0/1 会让调用方以为不用跑）。
+    """
+    from scipy import stats as sps
+
+    if delta <= 0 or sd <= 0:
+        return n_max
+    for n in range(3, n_max + 1):
+        t_crit = sps.t.ppf(1 - alpha / 2, n - 1)
+        ncp = delta * math.sqrt(n) / sd
+        with warnings.catch_warnings():
+            # df=3 时 scipy 的 boost 后端会报 "divide by zero in _nct_sf"，
+            # 但它自己 clip 到 [0,1]，返回值仍然正确（实测 df=3 的功效远小于
+            # 0.8，循环照常往下走）。只是噪声，不是数值错误。
+            warnings.simplefilter("ignore", RuntimeWarning)
+            if sps.nct.sf(t_crit, n - 1, ncp) >= power:
+                return n
+    return n_max
+
+
 __all__ = [
     "TestResult",
     "compare_all",
     "delong_test",
     "holm_bonferroni",
     "paired_bootstrap",
+    "pairs_needed",
     "wilcoxon_clients",
 ]

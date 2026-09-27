@@ -23,11 +23,17 @@ import argparse
 import json
 import math
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+# 样本量的唯一实现在包里。这一列（"检出指定差异所需配对数"）是论文表 4 的来源，
+# 曾经用正态近似算，每一格都少 2 个配对。见 pairs_needed 的 docstring。
+from fedosp.stats import pairs_needed  # noqa: E402
 
 #: 主端点在 result.json 里的取值路径。改端点只要在这里加一行。
 #: ``external`` 是 ``evaluate_predictions`` 的**扁平**返回值（未见中心只有一个，
@@ -178,9 +184,9 @@ def main() -> int:
         crossing = sum(1 for r in rows if r["lo"] <= 0 <= r["hi"])
         print(f"\n合并配对 SD = {pooled_sd:.4f}（{len(rows)} 个对比）")
         print(f"CI 跨零（与参照臂不可区分）：{crossing}/{len(rows)}")
-        print(f"\n以该 SD，检出指定差异所需配对数（双侧 α=0.05，功效 0.8）：")
+        print("\n以该 SD，检出指定差异所需配对数（双侧 α=0.05，功效 0.8，精确非中心 t）：")
         for delta in (0.005, 0.010, 0.015, 0.020, 0.030):
-            need = math.ceil((2.8016 ** 2) * pooled_sd ** 2 / delta ** 2)
+            need = pairs_needed(delta, pooled_sd)
             print(f"   Δ={delta:.3f} → {need:>4d} 对"
                   + ("   ← 文献典型声称区间" if delta in (0.010, 0.015, 0.020) else ""))
         if min(ns) < 5:
