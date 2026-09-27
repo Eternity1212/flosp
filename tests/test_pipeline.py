@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -1615,12 +1616,18 @@ def test_every_matrix_row_is_reachable_by_exactly_one_stage():
 
     另一半同样重要：前缀**互不为前缀**，否则一个配置会被两个阶段各跑一遍
     （项目早期真的发生过：``"a"`` 表示消融、``"a12"`` 表示骨干，a12 被双重匹配）。
+
+    第三件事：矩阵里允许写 ``exp_id`` 以 ``#`` 开头的**注释行**（用来记录
+    "这一行为什么被删掉"这类决策）。本测试跳过它们的规则必须和
+    ``scheduler.build_jobs`` 的跳过规则**完全一致** —— 两边不一致时，
+    要么注释行被当成真配置去跑，要么真配置被当成注释悄悄跳过。
+    所以下面顺便把调度器的跳过行为也一起钉住。
     """
     import csv
 
     repo_root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo_root / "scripts"))
-    from scheduler import STAGES
+    from scheduler import STAGES, build_jobs
 
     prefixes = [p for v in STAGES.values() for p in v]
     overlap = [(a, b) for a in prefixes for b in prefixes
@@ -1629,12 +1636,18 @@ def test_every_matrix_row_is_reachable_by_exactly_one_stage():
         f"阶段前缀互为前缀会导致同一配置被跑两遍：{overlap}"
     )
 
-    for csv_name in ["experiment_matrix.csv", "pilot_local.csv", "benchmark_matrix.csv"]:
+    matrices = ["experiment_matrix.csv", "pilot_local.csv",
+                "benchmark_matrix.csv", "variance_decomposition.csv"]
+    for csv_name in matrices:
         path = repo_root / "configs" / csv_name
-        if not path.exists():
-            continue
-        with open(path) as fh:
-            ids = [r["exp_id"] for r in csv.DictReader(fh) if (r.get("exp_id") or "").strip()]
+        assert path.exists(), (
+            f"configs/{csv_name} 不存在。新增矩阵必须同时登记到这个列表里，"
+            "否则它的 exp_id 前缀漏注册时没有任何信号"
+        )
+        with open(path, encoding="utf-8-sig") as fh:
+            rows = [r for r in csv.DictReader(fh) if (r.get("exp_id") or "").strip()]
+        ids = [r["exp_id"].strip() for r in rows
+               if not r["exp_id"].strip().startswith("#")]
         assert ids, f"{csv_name} 里没读到任何 exp_id"
         for exp_id in ids:
             hits = [name for name, pres in STAGES.items()
@@ -1643,6 +1656,23 @@ def test_every_matrix_row_is_reachable_by_exactly_one_stage():
                 f"{csv_name} 的 {exp_id!r} 匹配到 {len(hits)} 个阶段 {hits}；"
                 "应当恰好 1 个。0 个 = --stage all 会静默跳过它；"
                 ">1 个 = 会被重复跑"
+            )
+
+        # 注释行必须真的被调度器跳过，而不是靠"它碰巧匹配不到阶段前缀"。
+        commented = [r["exp_id"].strip() for r in rows
+                     if r["exp_id"].strip().startswith("#")]
+        if commented:
+            with tempfile.TemporaryDirectory() as td:
+                jobs = build_jobs(path, "all", Path(td), [0], None,
+                                  Path(td), Path(td) / "manifest.csv")
+            scheduled = {j.exp_id for j in jobs}
+            assert not (scheduled & set(commented)), (
+                f"{csv_name} 的注释行 {sorted(scheduled & set(commented))} "
+                "被调度器当成真配置排进去了"
+            )
+            assert scheduled == set(ids), (
+                f"{csv_name}：调度器排出的 exp_id {sorted(scheduled)} "
+                f"与非注释行 {sorted(ids)} 不一致"
             )
 
 
@@ -1664,7 +1694,8 @@ def test_benchmark_matrix_pins_the_configs_that_change_conclusions():
     import csv
 
     path = Path(__file__).resolve().parents[1] / "configs" / "benchmark_matrix.csv"
-    rows = {r["exp_id"]: r for r in csv.DictReader(open(path, encoding="utf-8-sig"))}
+    rows = {r["exp_id"]: r for r in csv.DictReader(open(path, encoding="utf-8-sig"))
+            if not r["exp_id"].startswith("#")}
 
     r = rows["bench_fedosp_r"]
     assert "--no-fsr" in r["extra_args"] and "--param-weight sample" in r["extra_args"], (
@@ -1684,6 +1715,126 @@ def test_benchmark_matrix_pins_the_configs_that_change_conclusions():
                 "A 层的存在理由就是把 CI 半宽压到 0.02 以下（σ_d=0.0272 时需 n≥10），"
                 "否则排除不了文献声称的 0.01~0.02 效应"
             )
+
+
+def test_benchmark_matrix_does_not_duplicate_the_frozen_external_panel():
+    """★ FedProx / MOON 归协作方的冻结面板，本矩阵重新加回来就是双重估计。
+
+    2026-09-27 协作方在 GPU 机器上启动了一个**冻结的预注册 20-run 面板**
+    （``base_fedprox_5c`` mu=0.01、``base_moon_5c`` mu=1.0/tau=0.5，均为 seed 3–12），
+    于是本仓库删掉了 ``bench_fedprox``（原 n=5）与 ``bench_moon``（原 n=10），
+    省 25.3 GPU·h。
+
+    把它们加回来有两个后果，第二个才是真正危险的：
+
+    1. 白烧 25.3 GPU·h 重跑一遍对方已经在跑的东西；
+    2. 主表里同时出现**两个 FedProx（或 MOON）估计**，其中一个还更粗
+       （n=5 的 CI 半宽 ±0.034，n=10 是 ±0.0195）。两个估计并存时，
+       "挑一个写进论文"就是按噪声选择 —— 正是这篇论文在批评的做法。
+
+    删除理由必须留在 CSV 里（``#`` 开头的注释行），否则半年后没人记得
+    为什么少了两个方法，多半会"顺手补上"。
+    """
+    import csv
+
+    path = Path(__file__).resolve().parents[1] / "configs" / "benchmark_matrix.csv"
+    with open(path, encoding="utf-8-sig") as fh:
+        rows = list(csv.DictReader(fh))
+
+    live = {r["exp_id"].strip() for r in rows
+            if r["exp_id"].strip() and not r["exp_id"].strip().startswith("#")}
+    for gone in ("bench_fedprox", "bench_moon"):
+        assert gone not in live, (
+            f"{gone} 又出现在 benchmark_matrix.csv 里了。它由协作方的冻结面板覆盖；"
+            "重跑会在主表里产生第二个更粗的估计，而两个估计并存就等于按结果挑一个"
+        )
+    for strategy in ("fedprox", "moon"):
+        dupes = [r["exp_id"] for r in rows
+                 if r["exp_id"].strip() in live and (r.get("strategy") or "").strip() == strategy]
+        assert not dupes, f"{strategy} 换了个 exp_id 又回来了：{dupes}"
+
+    # 删除决策必须可追溯，且写清楚对方的 exp_id 与超参，否则无法核对能不能合并
+    notes = " ".join((r.get("note") or "") for r in rows
+                     if r["exp_id"].strip().startswith("#"))
+    for token in ("base_fedprox_5c", "base_moon_5c", "--fedprox-mu 0.01",
+                  "--moon-mu 1.0", "--moon-tau 0.5", "NEXT_PHASE_PREREGISTRATION"):
+        assert token in notes, (
+            f"注释行里没写 {token!r}。合并对方结果时要按 exp_id + 超参逐项核对，"
+            "记不全就只能靠记忆，而本项目 12 个已知缺陷里有 8 个是静默失败"
+        )
+
+
+def test_variance_decomposition_matrix_matches_the_baseline_rows_it_decomposes():
+    """★ 方差分解臂的 ``extra_args`` 必须与它要分解的基线行逐字相同。
+
+    这个矩阵测的是"seed 间方差里有多少来自 argmax 选轮"。它的结论要外推到
+    ``base_fedavg`` / ``base_fedproto``，前提是跑的**就是同一个模型**。
+    少写一个 ``--no-deep-proto``，跑出来的就是带原型的 FedAvg，
+    拆出来的 Var_选择 不属于任何一个基准臂 —— 而它不会报错，
+    只会安静地给出一个无法归属的百分比。
+
+    ``fedproto`` 那行尤其容易写错：它是 ``--no-fsr --proto-agg sample``，
+    **没有** ``--no-shallow-proto/--no-deep-proto``（原型正是它的机制）。
+    照着 fedavg 那行复制粘贴就会把 FedProto 的机制关掉。
+
+    另外两件事一起钉住：
+
+    * 必须带 ``--eval-external-every``。不带就没有逐轮外测记录，
+      整个矩阵跑完等于零产出，而且同样不报错。
+    * 前缀必须是 ``diag_`` 不是 ``bench_``：``scripts/benchmark_table.py``
+      把 ``runs/bench_*`` 的每个 exp_id 当成论文主表的一个方法臂，
+      叫 ``bench_fedavg_vd`` 会在主表里多出一个只有 5 seed 的
+      "FedAvg 第二次估计"。
+    """
+    import csv
+
+    cfg = Path(__file__).resolve().parents[1] / "configs"
+    base = {r["exp_id"]: r for r in
+            csv.DictReader(open(cfg / "experiment_matrix.csv", encoding="utf-8-sig"))}
+    rows = {r["exp_id"]: r for r in
+            csv.DictReader(open(cfg / "variance_decomposition.csv", encoding="utf-8-sig"))
+            if not r["exp_id"].startswith("#")}
+
+    assert set(rows) == {"diag_varsel_fedavg", "diag_varsel_fedproto"}, (
+        f"矩阵行变了：{sorted(rows)}。两个方法是为了检验选择方差占比是否依方法而异，"
+        "只留一个就没法判断结论能不能外推到全表"
+    )
+
+    for exp_id, base_id in [("diag_varsel_fedavg", "base_fedavg"),
+                            ("diag_varsel_fedproto", "base_fedproto")]:
+        row = rows[exp_id]
+        args = row["extra_args"].split()
+        assert "--eval-external-every" in args, (
+            f"{exp_id} 没带 --eval-external-every，跑完不会有任何逐轮外测记录。"
+            "整个矩阵的唯一目的就是产生这份数据"
+        )
+        i = args.index("--eval-external-every")
+        assert args[i + 1] == "5", f"{exp_id} 的采样间隔是 {args[i+1]}，预注册写的是 5"
+
+        # 去掉外测开关后，必须和基线行逐字相同（顺序无关，集合相同即可）
+        stripped = [a for j, a in enumerate(args) if j not in (i, i + 1)]
+        assert set(stripped) == set(base[base_id]["extra_args"].split()), (
+            f"{exp_id} 的 extra_args 与 {base_id} 不一致：\n"
+            f"  本行：{' '.join(stripped)}\n"
+            f"  基线：{base[base_id]['extra_args']}\n"
+            "不一致时拆出来的 Var_选择 不属于任何一个基准臂"
+        )
+        assert row["strategy"] == base[base_id]["strategy"]
+
+        seeds = [int(s) for s in row["seeds"].split(";")]
+        assert seeds == [3, 4, 5, 6, 7], (
+            f"{exp_id} 的 seed 是 {seeds}，预注册写死的是 3–7（干净区间 3–12 的前 5 个）"
+        )
+        assert exp_id.startswith("diag_"), (
+            f"{exp_id} 用了 bench_ 前缀，会被 benchmark_table.py 当成论文主表的一个方法臂"
+        )
+
+    # FedProto 的机制不能被顺手关掉
+    proto_args = rows["diag_varsel_fedproto"]["extra_args"]
+    assert "--no-deep-proto" not in proto_args and "--no-shallow-proto" not in proto_args, (
+        "diag_varsel_fedproto 关掉了原型。FedProto 的机制就是原型，"
+        "关掉它等于跑了第二份 FedAvg"
+    )
 
 
 def test_variance_window_does_not_depend_on_validation_noise():
@@ -1721,6 +1872,47 @@ def test_variance_window_does_not_depend_on_validation_noise():
     assert trend_pvalue(list(range(60)), flat) > 0.05, "平坦曲线被误报为有趋势"
 
 
+def test_sample_size_uses_exact_noncentral_t_not_the_normal_approximation():
+    """★ 样本量必须用非中心 t 算；正态近似系统性低估，本项目已经栽过两次。
+
+    常见解析式 ``n = (z_.975 + z_.80)^2 * sd^2 / delta^2``（系数 7.849）有两处
+    偏差：临界值其实是 ``t_{n-1}`` 而不是 ``z``，且 ``s`` 是估计量。
+    两处都朝**低估**方向走 —— 也就是说它会告诉你"跑这么多 seed 就够了"，
+    而实际功效达不到 0.8。
+
+    第一次栽在 B0 闸门：commit ``8625569`` 的 message 写得很明白
+    "n=3 时临界值是 t₂=4.303 而非 z=1.96，差 2.2 倍、平方后 4.8 倍样本量"，
+    当时把 ``measure_power.py`` 改成了蒙特卡洛。
+    第二次栽在方差分解脚本和台账 §8.1 的样本量表 —— 两处都还留着
+    ``2.8016**2``，也就是同一个被否掉的近似。所以这条测试不测"结果大概对"，
+    它直接测"比近似值大"，把回退这个近似的改动当场拦住。
+    """
+    import math
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from variance_decomposition import pairs_needed
+
+    # 台账 §8.1 复算值（sigma_d = 0.0272，双侧 0.05，功效 0.8）
+    assert pairs_needed(0.010, 0.0272) == 61
+    assert pairs_needed(0.015, 0.0272) == 28
+    assert pairs_needed(0.020, 0.0272) == 17
+    assert pairs_needed(0.030, 0.0272) == 9
+
+    # 必须严格大于正态近似，且差距在小 n 处最大
+    for delta in (0.010, 0.015, 0.020, 0.030, 0.050):
+        approx = math.ceil((2.8016 ** 2) * 0.0272 ** 2 / delta ** 2)
+        exact = pairs_needed(delta, 0.0272)
+        assert exact > approx, (
+            f"Δ={delta}: 精确 t 给 {exact}，正态近似给 {approx}。"
+            "精确值不大于近似值，说明实现退回成了近似"
+        )
+
+    # 单调性与边界：差异越小越贵；非法输入不能返回一个看起来合理的小数字
+    ns = [pairs_needed(d, 0.0272) for d in (0.005, 0.010, 0.020, 0.050)]
+    assert ns == sorted(ns, reverse=True), f"样本量随效应量不单调：{ns}"
+    assert pairs_needed(0.0, 0.0272) >= 2000 and pairs_needed(0.01, 0.0) >= 2000
+
+
 def test_multiclass_brier_is_sensitive_to_where_probability_mass_lands():
     """★ Brier 必须能区分"错得远"和"错得近"，这正是它和 ECE 互补的理由。
 
@@ -1741,6 +1933,54 @@ def test_multiclass_brier_is_sensitive_to_where_probability_mass_lands():
     near = np.array([[0, 0.4, 0.3, 0.2, 0.1]])
     far = np.array([[0.4, 0.3, 0.2, 0.1, 0.0]])
     assert multiclass_brier(y, near) < multiclass_brier(y, far)
+
+
+def test_multiclass_brier_keeps_the_two_reference_points_used_to_detect_a_scale_mismatch():
+    """★ 钉住判定 Brier 口径用的两个参照点，它们是合并外部结果时的唯一标尺。
+
+    Brier 有 $[0,1]$ 与 $[0,2]$ 两种约定，相差**恰好 2 倍**，混用不报错、
+    不崩溃，只会让基准表里同一列出现两种尺度。GPU 机器上的代码与本仓库
+    已经分叉（台账 §12.3），而对方报告引用的 Brier（外测配对差 −0.0207、
+    oracle 先验重加权 0.507→0.604）必须能判定口径才能合并。
+
+    判定靠两个参照点，本测试把它们钉在实现上：
+
+    * **均匀预测**：$[0,2]$ 下恰为 0.8，$[0,1]$ 下是 0.4；
+    * **按 Messidor-2 边际先验常数预测**：$1-\\sum_k\\pi_k^2 = 0.594$ / 0.297。
+
+    有了它们，报告里的 0.507 就只能是 $[0,2]$：它比"只报先验"好一点、
+    比均匀好不少，是个合理的模型；读成 $[0,1]$ 则等价于 $[0,2]$ 的 1.014，
+    比均匀预测还差 —— 而校准模型的 $[0,2]$ Brier 上界就是 0.8
+    （$=1-\\mathbb{E}\\lVert p\\rVert^2$ 且 $\\lVert p\\rVert^2\\ge1/K$），根本达不到。
+
+    若有人把实现改成 $[0,1]$ 而忘了同步 docstring 和台账 §12.3，
+    这条测试会当场变红，而不是等到合表时才发现两种尺度已经混在一起。
+    """
+    from fedosp.metrics import multiclass_brier
+
+    # 均匀预测：与真实标签无关，恒为 (1-0.2)^2 + 4*0.2^2 = 0.8
+    for y in ([0], [2], [4], [0, 1, 2, 3, 4]):
+        unif = np.full((len(y), 5), 0.2)
+        assert abs(multiclass_brier(y, unif) - 0.8) < 1e-9, (
+            "均匀预测不再等于 0.8：口径可能被改成了 [0,1]，"
+            "而台账 §12.3 与 metrics 的 docstring 都是按 [0,2] 写的"
+        )
+
+    # 按边际先验常数预测：期望值 = 1 - Σπ²。用 Messidor-2 的公开分级分布，
+    # 其 referable(≥2) 占比 26.20% 与台账 §6 记录的真实值吻合。
+    counts = np.array([1017, 270, 347, 75, 35])
+    assert abs(counts[2:].sum() / counts.sum() - 0.2620) < 1e-3, "边际先验取错了"
+    pi = counts / counts.sum()
+    y = np.repeat(np.arange(5), counts)
+    probs = np.tile(pi, (len(y), 1))
+    expected = 1.0 - float((pi ** 2).sum())
+    assert abs(multiclass_brier(y, probs) - expected) < 1e-9
+    assert abs(expected - 0.5941) < 1e-3, f"参照点漂了：{expected:.4f}"
+
+    # 报告里的 0.507 必须落在「比先验好、比均匀好」的区间里，
+    # 而它的 [0,1] 读法（等价 [0,2] 的 1.014）必须落在均匀之外
+    assert 0.507 < expected < 0.8
+    assert 2 * 0.507 > 0.8
 
 
 def test_param_weight_flag_is_rejected_on_strategies_that_ignore_it():

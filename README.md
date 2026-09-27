@@ -289,16 +289,56 @@ bash scripts/run_all.sh --dry-run
 
 ### 分层与成本
 
+**2026-09-27 已与协作方的冻结面板去重**，下表是去重后的现值：
+
 | 层 | 内容 | 每臂 seed | run | GPU·h | 8 槽墙钟 |
 |---|---|---:|---:|---:|---:|
-| **A** | fedavg / fedproto / fedosp_r / qfedavg / moon / feddg | **10** | 60 | 77.4 | 9.7 h |
-| B | fedprox / fedbn / scaffold / fedper / feduaa / fedala / ditto | 5 | 35 | 46.1 | 5.8 h |
+| **A** | fedavg / fedproto / fedosp_r / qfedavg / feddg | **10** | 50 | 61.1 | 7.6 h |
+| B | fedbn / scaffold / fedper / feduaa / fedala / ditto | 5 | 30 | 42.0 | 5.3 h |
 | C | local / pooled / full / vpt（参考点，不参与方法比较） | 5 | 20 | 25.5 | 3.2 h |
-| D | `diag_delta`：LoRA 聚合偏差 δ 的逐轮轨迹 | 3 | 3 | 3.3 | 0.4 h |
+| D | `diag_delta`：LoRA 聚合偏差 δ 的逐轮轨迹 | 3 | 3 | 3.3 | 0.4 h † |
+| | **本矩阵合计** | | **103** | **131.9** | **16.5 h** |
+| ＋ | `configs/variance_decomposition.csv`（见下一节） | 5 | 10 | 11.8 | 1.5 h † |
+| | **两个矩阵总计** | | **113** | **143.7** | **18.0 h** |
 
-A 层三个新增成员的入选理由（写在 CSV 的 note 列里，可追溯）：
-q-FedAvg 是唯一针对 worst-client 端点的方法；MOON 是引用最高的表示层 FL 方法；
+† 墙钟列一律是 `GPU·h ÷ 8`，即**理想打包下界**。run 数少于槽位数的层达不到它：
+D 层 3 个 run 各约 1.1 h，实际墙钟就是 1.1 h；方差分解 10 个 run 排两波，约 2.4 h。
+
+A 层两个新增成员的入选理由（写在 CSV 的 note 列里，可追溯）：
+q-FedAvg 是唯一针对 worst-client 端点的方法；
 FedDG-ELCFS 是唯一的域泛化方法，直接对应未见中心端点。
+MOON（引用最高的表示层 FL 方法）**仍是事先指定的 A 层成员**，只是改由协作方
+的冻结面板执行，见下。
+
+### ★ FedProx 与 MOON 由协作方的冻结面板覆盖，本矩阵不重跑
+
+协作方在 GPU 机器上启动了一个**冻结的预注册 20-run 面板**
+（配置 `configs/benchmark_strong_baselines_seed3_12.csv`，
+文档 `NEXT_PHASE_PREREGISTRATION.md`，跑在 GPU4–7）：
+
+| 对方 exp_id | 策略 | 超参 | seed | 覆盖掉本仓库的 |
+|---|---|---|---|---|
+| `base_fedprox_5c` | fedprox | `--fedprox-mu 0.01` | 3–12（n=10） | `bench_fedprox`（原 n=5）|
+| `base_moon_5c` | moon | `--moon-mu 1.0 --moon-tau 0.5` | 3–12（n=10） | `bench_moon`（原 n=10）|
+
+两组超参都是本仓库的默认值（`run_fed.py` 里 `--fedprox-mu` 默认 0.01、
+`--moon-tau` 默认 0.5），seed 区间也一致，所以结果可以直接按 seed 配对合并。
+FedProx 那一行对方还严格更优（n=10 的 CI 半宽 ±0.0195，本仓库 n=5 只有 ±0.034）。
+
+所以这两行已从 `benchmark_matrix.csv` 删除，省 **25.3 GPU·h**；
+删除理由与合并核对清单写在 CSV 里两条 `#` 开头的注释行中
+（`exp_id` 以 `#` 开头的行会被 `scripts/scheduler.py` 跳过）。
+
+⚠️ **合并前必须核对三件事**：
+
+1. 对方 `extra_args` 是否同样带 `--no-fsr --no-shallow-proto --no-deep-proto`。
+   不带就是**带原型的 MOON/FedProx**，和本表其它行不是同一个模型。
+2. Brier 口径 —— 已核定为 $[0,2]$，见 `fedosp/metrics.py::multiclass_brier` 的 docstring。
+3. 对方面板**不带** `--eval-external-every`，所以 MOON/FedProx 不进入方差分解。
+
+⚠️ **不要重跑对方已覆盖的两行**，也**不要去改对方的面板**（哪怕只是补一个
+`--eval-external-every`）。前者会在主表里产生第二个更粗的估计，而两个估计并存时
+"按结果挑一个"就是按噪声选择；后者会毁掉预注册的全部价值。
 
 ### 怎么跑
 
@@ -357,22 +397,55 @@ $$\mathrm{Var}_{\text{total}} = \underbrace{\mathrm{Var}_{\text{选择}}}_{\text
 把平台期各轮的外测指标记进 `history`，开销约为训练时长的 4%
 （Messidor-2 只有 1,744 张，H100 上一次前向 8.4 秒）。
 
-**A/B 两层的基准行已经默认带上这个开关**，所以跑完横评就自动有数据，
-整个方差分解只多花 **4.9 GPU·h**：
+A/B 两层的基准行已经带上这个开关，所以跑完横评就自动有数据。
+但横评要 131.9 GPU·h，而这个测量本身只要 **11.8 GPU·h / 10 run**，
+不该被绑在一个大十倍的计划上。所以它另有一个**独立矩阵**
+`configs/variance_decomposition.csv`：
+
+| exp_id | 策略 | seed | extra_args | est_gpu_h |
+|---|---|---|---|---:|
+| `diag_varsel_fedavg` | fedavg | 3;4;5;6;7 | `--no-fsr --no-shallow-proto --no-deep-proto --eval-external-every 5` | 5.7 |
+| `diag_varsel_fedproto` | fedproto | 3;4;5;6;7 | `--no-fsr --proto-agg sample --eval-external-every 5` | 6.1 |
 
 ```bash
-python scripts/variance_decomposition.py                    # 默认 ext_qwk
-python scripts/variance_decomposition.py --prefix bench_fedavg
-python scripts/variance_decomposition.py --metric ext_referable_auroc
+python scripts/scheduler.py --matrix configs/variance_decomposition.csv \
+       --stage bench --gpus 0,1,2,3 --jobs-per-gpu 2
+python scripts/variance_decomposition.py --prefix diag_varsel   # 默认指标 ext_qwk
+python scripts/variance_decomposition.py --prefix diag_varsel --metric ext_referable_auroc
 ```
+
+三个设计决定，每个都对应一个具体的失效方式：
+
+- **两个方法而不是一个**：检验"选择方差占比"是否依方法而异。若两臂差很多，
+  任一臂的结论都不能外推到全表。
+- **`extra_args` 与 `base_fedavg`/`base_fedproto` 逐字相同**（只多一个
+  `--eval-external-every 5`）。差一个开关，拆出来的 Var_选择 就不属于任何基准臂。
+  注意 `base_fedproto` 是 `--no-fsr --proto-agg sample`，
+  **没有** `--no-shallow-proto/--no-deep-proto` —— 原型正是它的机制。
+- **前缀用 `diag_` 而不是 `bench_`**：`benchmark_table.py` 把 `runs/bench_*` 的
+  每个 exp_id 当成主表的一个方法臂，叫 `bench_fedavg_vd` 会在主表里多出一个
+  只有 5 seed 的"FedAvg 第二次估计"。`diag_` 同样被 `STAGES["bench"]` 路由，
+  但不会被主表脚本收走。
+
+> 协作方的冻结面板**不带** `--eval-external-every`，拿不到这份数据；
+> 而那个面板**不得为此改动**。所以这个测量必须独立成表。
 
 ### 结论是二值的，两种结果都有价值
 
-| 窗口内 SD | 选择占方差 | 含义 |
-|---:|---:|---|
-| 0.030 | 83% | **选择主导** → 改选择规则能压掉大部分噪声，这是可落地的方法贡献 |
-| 0.023 | 49% | 各半 |
-| 0.012 | 13% | **训练主导** → 噪声不可约，是更强的阴性结论 |
+判据在看到任何结果之前已写死在
+[`reports/预注册_方差分解_2026-09-27.md`](reports/预注册_方差分解_2026-09-27.md)：
+
+| 选择占总方差 | 结论 |
+|---|---|
+| **> 60%** | **选择主导** → 改选择规则能压掉大部分噪声，这是可落地的方法贡献 |
+| 30%–60% | 两者相当，**两个都报** |
+| **< 30%** | **训练主导** → 噪声不可约，是更强的阴性结论 |
+
+参照：窗口内 SD 0.030 对应约 83%，0.023 约 49%，0.012 约 13%。
+
+**60% / 30% 这两个阈值不得在看到结果之后修改。** 本项目已有现成教训：
+同一个配置三次估计 +0.0220 / +0.0443 / +0.0290，相差近一倍（台账 §4.1）；
+在 σ_d≈0.027 的噪声下，事后挑阈值可以把任何结果说成想要的样子。
 
 不存在"白跑"。
 
@@ -493,7 +566,10 @@ fedosp/
 │   └── make_figures.py          生成 F2–F7
 ├── configs/
 │   ├── default.yaml             默认超参
-│   └── experiment_matrix.csv    ★ 74 个配置，加实验只改这里
+│   ├── experiment_matrix.csv    ★ 74 个配置，加实验只改这里（已被推翻的方法主张）
+│   ├── benchmark_matrix.csv     ★ 基准论文的分层横评（A/B/C/D 四层）
+│   ├── variance_decomposition.csv  选择方差 vs 训练方差，11.8 GPU·h
+│   └── pilot_local.csv          本机 pilot，产出一律 tier="pilot"
 ├── tests/test_pipeline.py       关键正确性测试
 ├── DATA.md                      ★ 数据获取详细步骤
 └── README.md
