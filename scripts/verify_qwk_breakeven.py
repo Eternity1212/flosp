@@ -12,6 +12,10 @@
 
 换算率按**批量**测（一次修 21 例 ≈ C1 实测的 1.22 pp），而不是单例：
 §6.3 用这个常数的方式就是批量的，而单例的 ΔD 随受害样本的真值与方向剧烈摆动。
+
+运行::
+
+    python scripts/verify_qwk_breakeven.py     # 基线面板 + 八格表，纯 CPU，约 95 s
 """
 from __future__ import annotations
 

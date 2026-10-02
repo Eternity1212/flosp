@@ -5,6 +5,12 @@
 因此批量换算率
     m/n = [ (1-Q0)*dD_fix/n - dSSE_fix/n ] / [ 1 - (1-Q0)*delta_adj ]
 其中 delta_adj 是每新增一次邻级误判带来的 dD。
+
+基线构造与批量换算率都复用同目录的 ``verify_qwk_breakeven.py``。
+
+运行::
+
+    python scripts/verify_qwk_breakeven_drivers.py   # 纯 CPU，约 18 s
 """
 from __future__ import annotations
 
@@ -16,8 +22,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fedosp.metrics import quadratic_weighted_kappa  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _qwk_breakeven_check import (  # noqa: E402
+from verify_qwk_breakeven import (  # noqa: E402
     K, N, N_FIX, Y_TRUE, MU_T, build_baseline, breakeven,
 )
 
