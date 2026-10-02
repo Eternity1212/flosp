@@ -725,6 +725,94 @@ def test_t7_distinguishes_error_structure_at_equal_accuracy():
     assert perfect["far_error_rate"] == 0.0 and perfect["far_error_share"] == 0.0
 
 
+def test_qwk_far_to_adjacent_exchange_rate_is_d_squared_and_d_squared_minus_one():
+    """钉住台账 §6.3 的换算常数：**消除**一次距离-d 误判值 $d^2$ 次邻级误判，
+    **折算**成邻级误判只值 $d^2-1$ 次。
+
+    这不是对某次运行输出的快照，而是 `quadratic_weighted_kappa` 定义的恒等式：
+    分子 $\\sum w\\odot O = \\mathrm{SSE}/(K-1)^2$，分母
+    $\\sum w\\odot E = (S_2+T_2-2S_1T_1/N)/(K-1)^2$。于是 QWK 不变
+    $\\iff \\Delta\\mathrm{SSE} = (1-\\mathrm{QWK}_0)\\,\\Delta D$（精确，非一阶近似）。
+
+    构造刻意取 **D 中性**扰动（$\\Delta T_1=\\Delta T_2=0$，因此 $\\Delta D=0$），
+    此时换算率与基线 QWK 无关，两个常数精确成立 —— 这正是可以写死进测试的那一部分。
+    一旦扰动移动了预测边际的一、二阶矩，换算率就变成 $Q_0$ 相关量，不再是常数，
+    所以本测试**只**钉 D 中性情形。推导与数值核验见台账 §6.3。
+    """
+    from fedosp.metrics import quadratic_weighted_kappa as qwk
+
+    K = 5
+    y = np.repeat(np.arange(K), [400, 200, 250, 150, 100])
+    n = len(y)
+    rng = np.random.default_rng(0)
+
+    # 基线：各距离都有真实例子（含 d=3），不用 clip，避免边界压制远端误判率
+    pred = y.copy()
+    for d, count in ((3, 40), (2, 90), (1, 160)):
+        pool = [i for i in range(n)
+                if pred[i] == y[i] and (y[i] - d >= 0 or y[i] + d <= K - 1)]
+        for i in rng.choice(pool, size=count, replace=False):
+            step = rng.choice([s for s in (-1, 1) if 0 <= y[i] + s * d <= K - 1])
+            pred[i] = y[i] + step * d
+    q0 = qwk(y, pred)
+    assert 0.6 < q0 < 0.9, q0          # 基线落在本项目的真实量级内
+
+    t1 = lambda v: float(v.sum())                                   # noqa: E731
+    t2 = lambda v: float((v.astype(float) ** 2).sum())              # noqa: E731
+    sse = lambda v: float(((v - y) ** 2).sum())                     # noqa: E731
+
+    def claim(cond, count, used):
+        out = [i for i in range(n) if cond(y[i], pred[i]) and i not in used]
+        assert len(out) >= count, (count, len(out))
+        used.update(out[:count])
+        return out[:count]
+
+    for d in (2, 3):
+        for framing, expected in (("eliminate", d * d), ("convert", d * d - 1)):
+            used: set = set()
+            new = pred.copy()
+            # 距离-d 的**互换对**：真 0 判成 d，真 d 判成 0 —— 两者方向相反
+            a = claim(lambda t, c: t == 0 and c == d, 1, used)[0]
+            b = claim(lambda t, c: t == d and c == 0, 1, used)[0]
+            if framing == "eliminate":
+                new[a], new[b] = y[a], y[b]
+            else:                                    # 挪到距离恰好 1（d=3 是两步）
+                new[a], new[b] = y[a] + 1, y[b] - 1
+
+            # 补偿 1：同真值的上下对，ΔT1=0 / ΔT2=+2 / ΔSSE=+2 —— 用来补平 ΔT2
+            resid = int(round(t2(pred) - t2(new)))
+            assert resid >= 0 and resid % 2 == 0, resid
+            for i in claim(lambda t, c: t == 2 and c == 2, resid // 2, used):
+                new[i] = y[i] + 1
+            for i in claim(lambda t, c: t == 2 and c == 2, resid // 2, used):
+                new[i] = y[i] - 1
+
+            # 补偿 2：邻级互换对（真 1 判 2 / 真 2 判 1），ΔT1=ΔT2=0 / ΔSSE=+2
+            pairs = int(round(sse(pred) - sse(new))) // 2
+            for i in claim(lambda t, c: t == 1 and c == 1, pairs, used):
+                new[i] = y[i] + 1
+            for i in claim(lambda t, c: t == 2 and c == 2, pairs, used):
+                new[i] = y[i] - 1
+
+            n_adj = resid + 2 * pairs                # 新增的邻级误判总例数
+            assert t1(new) == t1(pred) and t2(new) == t2(pred), "扰动必须是 D 中性的"
+            assert n_adj == 2 * expected, (d, framing, n_adj, expected)
+            # 盈亏平衡：QWK 精确不动
+            assert abs(qwk(y, new) - q0) < 1e-12, (d, framing, qwk(y, new) - q0)
+
+            # 再多一对邻级误判就必须跌破基线（证明 expected 是上界而非随便一个数）
+            over = new.copy()
+            for i in claim(lambda t, c: t == 1 and c == 1, 1, used):
+                over[i] = y[i] + 1
+            for i in claim(lambda t, c: t == 2 and c == 2, 1, used):
+                over[i] = y[i] - 1
+            assert qwk(y, over) < q0 - 1e-9, (d, framing, qwk(y, over) - q0)
+
+    # 冻结：$d^2$ 与 $d^2-1$ 的差恰好是 1，即"消除"与"折算"两种口径差一次邻级误判。
+    # 台账 §6.3 的 3:1 属于 convert/d=2，4:1 属于 eliminate/d=2，两者都对，口径不同。
+    assert (2 ** 2) - (2 ** 2 - 1) == 1
+
+
 # --------------------------------------------------------------------------- #
 # B12–B17 新基线：每一条都在验证「机制真的改变了行为」，而不只是「能跑完」
 #
